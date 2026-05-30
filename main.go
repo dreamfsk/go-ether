@@ -26,9 +26,9 @@ func main() {
 		log.Println("Warning: .env file not found, using environment variables")
 	}
 
-	rpcURL := os.Getenv("SEPOLIA_RPC_URL")
+	rpcURL := os.Getenv("ETH_RPC_URL")
 	if rpcURL == "" {
-		log.Fatal("SEPOLIA_RPC_URL is not set")
+		log.Fatal("ETH_RPC_URL is not set")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
