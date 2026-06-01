@@ -26,11 +26,15 @@ type EventService struct {
 }
 
 func NewEventService(c *client.EthClient, s *store.EventStore, contractAddr string) (*EventService, error) {
+	log.Printf("🔧 [EventService] 初始化，合约地址: %s", contractAddr)
+	
 	parsedABI, err := abi.JSON(strings.NewReader(erc20ABIJSON))
 	if err != nil {
+		log.Printf("❌ [EventService] ABI 解析失败: %v", err)
 		return nil, fmt.Errorf("failed to parse ABI: %w", err)
 	}
-
+	
+	log.Println("✅ [EventService] ABI 解析成功")
 	return &EventService{
 		client:   c,
 		store:    s,
@@ -40,6 +44,8 @@ func NewEventService(c *client.EthClient, s *store.EventStore, contractAddr stri
 }
 
 func (s *EventService) StartListening(ctx context.Context) {
+	log.Println("👂 [EventService] 开始订阅 ERC20 Transfer 事件...")
+	
 	query := ethereum.FilterQuery{
 		Addresses: []common.Address{s.contract},
 	}
@@ -47,22 +53,23 @@ func (s *EventService) StartListening(ctx context.Context) {
 	logsCh := make(chan types.Log)
 	sub, err := s.client.SubscribeFilterLogs(ctx, query, logsCh)
 	if err != nil {
-		log.Printf("failed to subscribe logs: %v", err)
+		log.Printf("❌ [EventService] 事件订阅失败: %v", err)
 		return
 	}
 	defer sub.Unsubscribe()
 
-	log.Printf("listening Transfer events of %s", s.contract.Hex())
+	log.Printf("✅ [EventService] 事件订阅成功，监听合约: %s", s.contract.Hex())
 
 	for {
 		select {
 		case vLog := <-logsCh:
+			log.Printf("📨 [EventService] 收到日志，区块 #%d，交易: %s", vLog.BlockNumber, vLog.TxHash.Hex())
 			s.processLog(vLog)
 		case err := <-sub.Err():
-			log.Printf("subscription error: %v", err)
+			log.Printf("❌ [EventService] 订阅错误: %v", err)
 			return
 		case <-ctx.Done():
-			log.Println("context cancelled, stop subscription")
+			log.Println("🔄 [EventService] 上下文被取消，停止监听")
 			return
 		}
 	}
@@ -70,6 +77,7 @@ func (s *EventService) StartListening(ctx context.Context) {
 
 func (s *EventService) processLog(vLog types.Log) {
 	if len(vLog.Topics) == 0 {
+		log.Printf("⚠️  [EventService] 跳过无效日志（无 Topics）")
 		return
 	}
 
@@ -80,7 +88,7 @@ func (s *EventService) processLog(vLog types.Log) {
 	}
 
 	if err := s.abi.UnpackIntoInterface(&event, "Transfer", vLog.Data); err != nil {
-		log.Printf("failed to unpack log data: %v", err)
+		log.Printf("❌ [EventService] 日志数据解析失败: %v", err)
 		return
 	}
 
@@ -88,6 +96,9 @@ func (s *EventService) processLog(vLog types.Log) {
 		event.From = common.BytesToAddress(vLog.Topics[1].Bytes())
 		event.To = common.BytesToAddress(vLog.Topics[2].Bytes())
 	}
+
+	log.Printf("💸 [EventService] 捕获 Transfer 事件: 从 %s 到 %s, 数量: %s", 
+		event.From.Hex(), event.To.Hex(), event.Value.String())
 
 	s.store.Add(store.TransferEvent{
 		BlockNumber: vLog.BlockNumber,

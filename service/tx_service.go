@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
+	"log"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -17,6 +19,7 @@ type TransactionInfo struct {
 	Value     string       `json:"value"`
 	Gas       uint64       `json:"gas"`
 	GasPrice  string       `json:"gasPrice"`
+	InputData string       `json:"inputData"`
 	DataLen   int          `json:"dataLen"`
 	IsPending bool         `json:"isPending"`
 	Receipt   *ReceiptInfo `json:"receipt,omitempty"`
@@ -36,13 +39,17 @@ type TxService struct {
 }
 
 func NewTxService(c *client.EthClient) *TxService {
+	log.Println("🔧 [TxService] 初始化")
 	return &TxService{client: c}
 }
 
 func (s *TxService) GetTransactionByHash(ctx context.Context, hash string) (*TransactionInfo, error) {
+	log.Printf("🔍 [TxService] 查询交易: %s", hash)
+	
 	txHash := common.HexToHash(hash)
 	tx, isPending, err := s.client.TransactionByHash(ctx, txHash)
 	if err != nil {
+		log.Printf("❌ [TxService] 查询交易失败: %v", err)
 		return nil, fmt.Errorf("failed to get transaction: %w", err)
 	}
 
@@ -64,6 +71,7 @@ func (s *TxService) GetTransactionByHash(ctx context.Context, hash string) (*Tra
 		Value:     tx.Value().String(),
 		Gas:       tx.Gas(),
 		GasPrice:  tx.GasPrice().String(),
+		InputData: "0x" + hex.EncodeToString(tx.Data()),
 		DataLen:   len(tx.Data()),
 		IsPending: isPending,
 	}
@@ -82,5 +90,11 @@ func (s *TxService) GetTransactionByHash(ctx context.Context, hash string) (*Tra
 		}
 	}
 
+	status := "pending"
+	if !isPending {
+		status = "confirmed"
+	}
+	log.Printf("✅ [TxService] 交易查询成功 (%s): 从 %s 到 %s", status, txInfo.From, txInfo.To)
+	
 	return txInfo, nil
 }

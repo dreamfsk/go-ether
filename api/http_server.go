@@ -30,11 +30,21 @@ func NewServer(handlers *Handlers, addr string) *Server {
 }
 
 func (s *Server) Start() error {
-	log.Printf("HTTP server listening on %s", s.httpServer.Addr)
+	log.Printf("🌐 [HTTP] 服务器启动中，监听地址: %s", s.httpServer.Addr)
+	log.Println("🗺️  [HTTP] 已注册路由:")
+	log.Println("   - GET /api/block/{id}")
+	log.Println("   - GET /api/tx/{hash}")
+	log.Println("   - GET /api/events")
 	return s.httpServer.ListenAndServe()
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
-	log.Println("shutting down HTTP server...")
-	return s.httpServer.Shutdown(ctx)
+	log.Println("🔄 [HTTP] 正在优雅关闭服务器...")
+	err := s.httpServer.Shutdown(ctx)
+	if err != nil {
+		log.Printf("⚠️  [HTTP] 服务器关闭警告: %v", err)
+	} else {
+		log.Println("✅ [HTTP] 服务器已成功关闭")
+	}
+	return err
 }

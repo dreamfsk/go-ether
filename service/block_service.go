@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
 	"math/big"
 	"strconv"
 
@@ -27,10 +28,13 @@ type BlockService struct {
 }
 
 func NewBlockService(c *client.EthClient) *BlockService {
+	log.Println("🔧 [BlockService] 初始化")
 	return &BlockService{client: c}
 }
 
 func (s *BlockService) GetBlockByID(ctx context.Context, id string) (*BlockInfo, error) {
+	log.Printf("🔍 [BlockService] 查询区块: %s", id)
+	
 	var block *types.Block
 	var err error
 
@@ -42,10 +46,14 @@ func (s *BlockService) GetBlockByID(ctx context.Context, id string) (*BlockInfo,
 	}
 
 	if err != nil {
+		log.Printf("❌ [BlockService] 查询区块失败: %v", err)
 		return nil, fmt.Errorf("failed to get block: %w", err)
 	}
 
-	return convertBlock(block), nil
+	info := convertBlock(block)
+	log.Printf("✅ [BlockService] 区块 #%d 查询成功，包含 %d 笔交易", info.Number, info.TxCount)
+	
+	return info, nil
 }
 
 func convertBlock(block *types.Block) *BlockInfo {
