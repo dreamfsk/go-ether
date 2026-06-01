@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -16,7 +18,21 @@ import (
 	"github.com/meu/go-ether/store"
 )
 
-const erc20ABIJSON = `[{"anonymous":false,"inputs":[{"indexed":true,"name":"from","type":"address"},{"indexed":true,"name":"to","type":"address"},{"indexed":false,"name":"value","type":"uint256"}],"name":"Transfer","type":"event"}]`
+const abiFilePath = "abi.json"
+
+func loadABI() (string, error) {
+	absPath, err := filepath.Abs(abiFilePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to get absolute path: %w", err)
+	}
+
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read ABI file (%s): %w", absPath, err)
+	}
+
+	return string(data), nil
+}
 
 type EventService struct {
 	client   *client.EthClient
@@ -27,13 +43,20 @@ type EventService struct {
 
 func NewEventService(c *client.EthClient, s *store.EventStore, contractAddr string) (*EventService, error) {
 	log.Printf("🔧 [EventService] 初始化，合约地址: %s", contractAddr)
-	
-	parsedABI, err := abi.JSON(strings.NewReader(erc20ABIJSON))
+
+	abiJSON, err := loadABI()
+	if err != nil {
+		log.Printf("❌ [EventService] 加载 ABI 文件失败: %v", err)
+		return nil, fmt.Errorf("failed to load ABI: %w", err)
+	}
+	log.Println("📄 [EventService] ABI 文件加载成功")
+
+	parsedABI, err := abi.JSON(strings.NewReader(abiJSON))
 	if err != nil {
 		log.Printf("❌ [EventService] ABI 解析失败: %v", err)
 		return nil, fmt.Errorf("failed to parse ABI: %w", err)
 	}
-	
+
 	log.Println("✅ [EventService] ABI 解析成功")
 	return &EventService{
 		client:   c,

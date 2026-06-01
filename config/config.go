@@ -18,6 +18,7 @@ func Load() *Config {
 	if err != nil {
 		log.Println("Warning: .env file not found, using environment variables")
 	}
+	dotenv.Load()
 	wsURL := os.Getenv("ETH_WS_URL")
 	rpcURL := os.Getenv("ETH_RPC_URL")
 	contractAddr := os.Getenv("ERC20_CONTRACT")
