@@ -5,15 +5,44 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"sync"
 
-	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/meu/go-ether/client"
 	"github.com/meu/go-ether/config"
 	"github.com/meu/go-ether/wallet"
 )
+
+var (
+	selectorCache   = make(map[string][]byte)
+	selectorCacheMu sync.RWMutex
+)
+
+func getMethodSelector(methodSig string) ([]byte, error) {
+	selectorCacheMu.RLock()
+	if selector, ok := selectorCache[methodSig]; ok {
+		selectorCacheMu.RUnlock()
+		return selector, nil
+	}
+	selectorCacheMu.RUnlock()
+
+	selectorCacheMu.Lock()
+	defer selectorCacheMu.Unlock()
+
+	if selector, ok := selectorCache[methodSig]; ok {
+		return selector, nil
+	}
+
+	hash := crypto.Keccak256Hash([]byte(methodSig))
+	selector := hash[:4]
+	selectorCache[methodSig] = selector
+
+	return selector, nil
+}
 
 type ContractService struct {
 	client  *client.EthClient
@@ -188,22 +217,27 @@ func (s *ContractService) SendTransaction(ctx context.Context, req ContractCallR
 }
 
 func abiEncodeGetCount() ([]byte, error) {
-	return []byte{0x06, 0xfd, 0xde, 0x03}, nil
+	return getMethodSelector("getCount()")
 }
 
 func abiEncodeOwner() ([]byte, error) {
-	return []byte{0x8d, 0xa5, 0xcb, 0x5b}, nil
+	return getMethodSelector("owner()")
 }
 
 func abiEncodeIncrement() ([]byte, error) {
-	return []byte{0x16, 0x21, 0x6f, 0x39}, nil
+	return getMethodSelector("increment()")
 }
 
 func abiEncodeDecrement() ([]byte, error) {
-	return []byte{0x0d, 0xe6, 0x7e, 0x2b}, nil
+	return getMethodSelector("decrement()")
 }
 
 func abiEncodeSetCount(count *big.Int) ([]byte, error) {
+	methodID, err := getMethodSelector("setCount(uint256)")
+	if err != nil {
+		return nil, err
+	}
+
 	args, err := abi.NewType("uint256", "", nil)
 	if err != nil {
 		return nil, err
@@ -214,6 +248,5 @@ func abiEncodeSetCount(count *big.Int) ([]byte, error) {
 		return nil, err
 	}
 
-	methodID := []byte{0x67, 0xe0, 0x85, 0x11}
 	return append(methodID, encoded...), nil
 }
