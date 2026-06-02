@@ -18,7 +18,7 @@ import (
 	"github.com/meu/go-ether/store"
 )
 
-const abiFilePath = "abi.json"
+const abiFilePath = "build/MyERC20.abi"
 
 func loadABI() (string, error) {
 	absPath, err := filepath.Abs(abiFilePath)
@@ -28,7 +28,7 @@ func loadABI() (string, error) {
 
 	data, err := os.ReadFile(absPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to read ABI file (%s): %w", absPath, err)
+		return "", fmt.Errorf("failed to read ABI file (%s): %w。请运行 node compile.js 编译合约", absPath, err)
 	}
 
 	return string(data), nil
@@ -68,7 +68,7 @@ func NewEventService(c *client.EthClient, s *store.EventStore, contractAddr stri
 
 func (s *EventService) StartListening(ctx context.Context) {
 	log.Println("👂 [EventService] 开始订阅 ERC20 Transfer 事件...")
-	
+
 	query := ethereum.FilterQuery{
 		Addresses: []common.Address{s.contract},
 	}
@@ -104,6 +104,12 @@ func (s *EventService) processLog(vLog types.Log) {
 		return
 	}
 
+	// 检查是否为 Transfer 事件 (topic hash)
+	transferEventSig := s.abi.Events["Transfer"].ID
+	if vLog.Topics[0] != transferEventSig {
+		return
+	}
+
 	var event struct {
 		From  common.Address
 		To    common.Address
@@ -120,7 +126,7 @@ func (s *EventService) processLog(vLog types.Log) {
 		event.To = common.BytesToAddress(vLog.Topics[2].Bytes())
 	}
 
-	log.Printf("💸 [EventService] 捕获 Transfer 事件: 从 %s 到 %s, 数量: %s", 
+	log.Printf("💸 [EventService] 捕获 Transfer 事件: 从 %s 到 %s, 数量: %s",
 		event.From.Hex(), event.To.Hex(), event.Value.String())
 
 	s.store.Add(store.TransferEvent{

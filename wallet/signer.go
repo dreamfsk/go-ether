@@ -64,3 +64,8 @@ func (s *EnvSigner) SignTx(ctx context.Context, tx *types.Transaction, chainID *
 func (s *EnvSigner) Address() common.Address {
 	return s.address
 }
+
+// PrivateKey 返回私钥（仅用于合约绑定）
+func (s *EnvSigner) PrivateKey() *ecdsa.PrivateKey {
+	return s.privateKey
+}

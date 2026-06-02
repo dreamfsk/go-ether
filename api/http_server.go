@@ -27,6 +27,8 @@ func NewServer(handlers *Handlers, txHandlers *TxHandlers, contractHandlers *Con
 	mux.HandleFunc("/api/token/info", contractHandlers.TokenInfo)
 	mux.HandleFunc("/api/token/balance", contractHandlers.TokenBalance)
 	mux.HandleFunc("/api/token/transfer", contractHandlers.TokenTransfer)
+	mux.HandleFunc("/api/token/mint", contractHandlers.TokenMint)
+	mux.HandleFunc("/api/token/deploy", contractHandlers.TokenDeploy)
 
 	return &Server{
 		httpServer:       &http.Server{
@@ -55,6 +57,8 @@ func (s *Server) Start() error {
 	log.Println("   - GET /api/token/info")
 	log.Println("   - GET /api/token/balance")
 	log.Println("   - POST /api/token/transfer")
+	log.Println("   - POST /api/token/mint")
+	log.Println("   - POST /api/token/deploy")
 	return s.httpServer.ListenAndServe()
 }
 

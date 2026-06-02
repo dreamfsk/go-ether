@@ -101,11 +101,15 @@ func main() {
 		log.Println("✅ 合约服务初始化完成")
 	}
 
-	log.Println("🔧 初始化代币服务...")
-	var tokenService *service.TokenService
+	log.Println("🔧 初始化 ERC20 服务...")
+	var erc20Service *service.ERC20Service
 	if signer != nil {
-		tokenService = service.NewTokenService(ethClient, signer, cfg.Network, cfg.NetworkConfig.ChainID)
-		log.Println("✅ 代币服务初始化完成")
+		erc20Service, err = service.NewERC20Service(ethClient, signer, cfg.Network, cfg.NetworkConfig.ChainID, cfg.ERC20Contract)
+		if err != nil {
+			log.Printf("⚠️  ERC20 服务初始化失败: %v", err)
+		} else {
+			log.Println("✅ ERC20 服务初始化完成")
+		}
 	}
 
 	log.Println("✅ 服务组件初始化完成")
@@ -116,7 +120,7 @@ func main() {
 	log.Println("🌐 启动 HTTP API 服务器 (端口: 8080)...")
 	handlers := api.NewHandlers(blockService, txService, eventStore)
 	txHandlers := api.NewTxHandlers(txSendService, txHistoryStore)
-	contractHandlers := api.NewContractHandlers(contractService, tokenService)
+	contractHandlers := api.NewContractHandlers(contractService, erc20Service)
 	server := api.NewServer(handlers, txHandlers, contractHandlers, ":8080")
 
 	go func() {
@@ -139,6 +143,7 @@ func main() {
 	log.Println("     - GET /api/token/info")
 	log.Println("     - GET /api/token/balance")
 	log.Println("     - POST /api/token/transfer")
+	log.Println("     - POST /api/token/mint")
 	log.Println("=============================================")
 
 	sigCh := make(chan os.Signal, 1)

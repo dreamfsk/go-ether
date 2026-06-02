@@ -1,0 +1,28 @@
+{
+  "name": "go-ether",
+  "version": "1.0.0",
+  "description": "一个基于 Go 语言和 go-ethereum 库构建的迷你区块浏览器和 ERC-20 监控服务。提供完整的区块链数据查询、交易发送、合约交互和代币管理功能。",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dreamfsk/go-ether.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/dreamfsk/go-ether/issues"
+  },
+  "homepage": "https://github.com/dreamfsk/go-ether#readme",
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.6.1",
+    "solc": "^0.8.20"
+  }
+}

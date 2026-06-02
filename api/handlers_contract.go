@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"log"
+	"math/big"
 	"net/http"
 
 	"github.com/meu/go-ether/service"
@@ -10,13 +11,13 @@ import (
 
 type ContractHandlers struct {
 	contractService *service.ContractService
-	tokenService    *service.TokenService
+	erc20Service    *service.ERC20Service
 }
 
-func NewContractHandlers(contractService *service.ContractService, tokenService *service.TokenService) *ContractHandlers {
+func NewContractHandlers(contractService *service.ContractService, erc20Service *service.ERC20Service) *ContractHandlers {
 	return &ContractHandlers{
 		contractService: contractService,
-		tokenService:    tokenService,
+		erc20Service:    erc20Service,
 	}
 }
 
@@ -91,20 +92,12 @@ func (h *ContractHandlers) ContractCall(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *ContractHandlers) TokenInfo(w http.ResponseWriter, r *http.Request) {
-	tokenAddr := r.URL.Query().Get("token")
-	if tokenAddr == "" {
-		http.Error(w, "token address is required", http.StatusBadRequest)
+	if h.erc20Service == nil {
+		http.Error(w, "ERC20 service not available", http.StatusServiceUnavailable)
 		return
 	}
 
-	log.Printf("📥 [API] GET /api/token/info - token: %s", tokenAddr)
-
-	if h.tokenService == nil {
-		http.Error(w, "Token service not available", http.StatusServiceUnavailable)
-		return
-	}
-
-	info, err := h.tokenService.GetTokenInfo(r.Context(), tokenAddr)
+	info, err := h.erc20Service.GetTokenInfo(r.Context())
 	if err != nil {
 		log.Printf("❌ [API] 查询代币信息失败: %v", err)
 		http.Error(w, "Failed to get token info: "+err.Error(), http.StatusInternalServerError)
@@ -115,31 +108,31 @@ func (h *ContractHandlers) TokenInfo(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(info)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"name":         info.Name,
+		"symbol":       info.Symbol,
+		"decimals":     info.Decimals,
+		"totalSupply":  info.TotalSupply.String(),
+		"contractAddr": h.erc20Service.ContractAddress().Hex(),
+	})
 }
 
 func (h *ContractHandlers) TokenBalance(w http.ResponseWriter, r *http.Request) {
-	tokenAddr := r.URL.Query().Get("token")
 	holderAddr := r.URL.Query().Get("holder")
-
-	if tokenAddr == "" {
-		http.Error(w, "token address is required", http.StatusBadRequest)
-		return
-	}
 
 	if holderAddr == "" {
 		http.Error(w, "holder address is required", http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("📥 [API] GET /api/token/balance - token: %s, holder: %s", tokenAddr, holderAddr)
+	log.Printf("📥 [API] GET /api/token/balance - holder: %s", holderAddr)
 
-	if h.tokenService == nil {
-		http.Error(w, "Token service not available", http.StatusServiceUnavailable)
+	if h.erc20Service == nil {
+		http.Error(w, "ERC20 service not available", http.StatusServiceUnavailable)
 		return
 	}
 
-	balance, err := h.tokenService.GetBalance(r.Context(), tokenAddr, holderAddr)
+	balance, err := h.erc20Service.BalanceOf(r.Context(), holderAddr)
 	if err != nil {
 		log.Printf("❌ [API] 查询代币余额失败: %v", err)
 		http.Error(w, "Failed to get balance: "+err.Error(), http.StatusInternalServerError)
@@ -148,10 +141,10 @@ func (h *ContractHandlers) TokenBalance(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{
-		"token":   tokenAddr,
-		"holder":  holderAddr,
-		"balance": balance,
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"holder":        holderAddr,
+		"balance":       balance.String(),
+		"contractAddr":  h.erc20Service.ContractAddress().Hex(),
 	})
 }
 
@@ -161,7 +154,10 @@ func (h *ContractHandlers) TokenTransfer(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	var req service.TokenTransferRequest
+	var req struct {
+		To     string `json:"to"`
+		Amount string `json:"amount"`
+	}
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
 		log.Printf("❌ [API] 解析代币转账请求失败: %v", err)
@@ -169,23 +165,130 @@ func (h *ContractHandlers) TokenTransfer(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	log.Printf("📥 [API] POST /api/token/transfer - token: %s, to: %s, amount: %s", req.TokenAddr, req.To, req.Amount)
+	log.Printf("📥 [API] POST /api/token/transfer - to: %s, amount: %s", req.To, req.Amount)
 
-	if h.tokenService == nil {
-		http.Error(w, "Token service not available", http.StatusServiceUnavailable)
+	if h.erc20Service == nil {
+		http.Error(w, "ERC20 service not available", http.StatusServiceUnavailable)
 		return
 	}
 
-	resp, err := h.tokenService.Transfer(r.Context(), req)
+	amount, ok := new(big.Int).SetString(req.Amount, 10)
+	if !ok {
+		http.Error(w, "invalid amount format", http.StatusBadRequest)
+		return
+	}
+
+	txHash, err := h.erc20Service.Transfer(r.Context(), req.To, amount)
 	if err != nil {
 		log.Printf("❌ [API] 代币转账失败: %v", err)
 		http.Error(w, "Failed to transfer: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("✅ [API] 代币转账交易发送成功: %s", resp.TxHash)
+	log.Printf("✅ [API] 代币转账交易发送成功: %s", txHash)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(resp)
+	json.NewEncoder(w).Encode(map[string]string{
+		"txHash": txHash,
+		"status": "pending",
+	})
+}
+
+func (h *ContractHandlers) TokenMint(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		To     string `json:"to"`
+		Amount string `json:"amount"`
+	}
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		log.Printf("❌ [API] 解析代币铸造请求失败: %v", err)
+		http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("📥 [API] POST /api/token/mint - to: %s, amount: %s", req.To, req.Amount)
+
+	if h.erc20Service == nil {
+		http.Error(w, "ERC20 service not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	amount, ok := new(big.Int).SetString(req.Amount, 10)
+	if !ok {
+		http.Error(w, "invalid amount format", http.StatusBadRequest)
+		return
+	}
+
+	txHash, err := h.erc20Service.Mint(r.Context(), req.To, amount)
+	if err != nil {
+		log.Printf("❌ [API] 代币铸造失败: %v", err)
+		http.Error(w, "Failed to mint: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("✅ [API] 代币铸造交易发送成功: %s", txHash)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"txHash": txHash,
+		"status": "pending",
+	})
+}
+
+func (h *ContractHandlers) TokenDeploy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Name          string `json:"name"`
+		Symbol        string `json:"symbol"`
+		InitialSupply string `json:"initialSupply"`
+		Recipient     string `json:"recipient"`
+	}
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		log.Printf("❌ [API] 解析合约部署请求失败: %v", err)
+		http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if req.Name == "" || req.Symbol == "" || req.InitialSupply == "" || req.Recipient == "" {
+		http.Error(w, "name, symbol, initialSupply and recipient are required", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("📥 [API] POST /api/token/deploy - name: %s, symbol: %s, recipient: %s", req.Name, req.Symbol, req.Recipient)
+
+	if h.erc20Service == nil {
+		http.Error(w, "ERC20 service not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	initialSupply, ok := new(big.Int).SetString(req.InitialSupply, 10)
+	if !ok {
+		http.Error(w, "invalid initialSupply format", http.StatusBadRequest)
+		return
+	}
+
+	result, err := h.erc20Service.Deploy(r.Context(), req.Name, req.Symbol, initialSupply, req.Recipient)
+	if err != nil {
+		log.Printf("❌ [API] 合约部署失败: %v", err)
+		http.Error(w, "Failed to deploy: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("✅ [API] 合约部署交易发送成功: tx=%s, addr=%s", result.TxHash, result.Address)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(result)
 }
