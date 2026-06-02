@@ -16,6 +16,7 @@ import (
 	"github.com/meu/go-ether/config"
 	"github.com/meu/go-ether/service"
 	"github.com/meu/go-ether/store"
+	"github.com/meu/go-ether/wallet"
 )
 
 func main() {
@@ -39,7 +40,9 @@ func main() {
 	}
 
 	log.Printf("✅ 配置加载完成")
+	log.Printf("   - 当前网络: %s", cfg.Network)
 	log.Printf("   - 节点 URL: %s", nodeURL)
+	log.Printf("   - ChainID: %s", cfg.NetworkConfig.ChainID.String())
 	log.Printf("   - ERC20 合约: %s", cfg.ERC20Contract)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -57,6 +60,26 @@ func main() {
 	eventStore := store.NewEventStore(100)
 	log.Println("✅ 事件存储初始化完成")
 
+	log.Println("📦 初始化 SQLite 交易历史存储...")
+	txHistoryStore, err := store.NewTxHistoryStore("transactions.db")
+	if err != nil {
+		log.Fatalf("❌ SQLite 初始化失败: %v", err)
+	}
+	log.Println("✅ SQLite 交易历史存储初始化完成")
+	defer txHistoryStore.Close()
+
+	var signer wallet.Signer
+	log.Println("🔐 初始化钱包...")
+	envSigner, err := wallet.NewEnvSigner()
+	if err != nil {
+		log.Printf("⚠️  钱包初始化失败: %v", err)
+		log.Println("   交易发送功能将不可用")
+		signer = nil
+	} else {
+		signer = envSigner
+		log.Printf("✅ 钱包初始化成功，地址: %s", signer.Address().Hex())
+	}
+
 	log.Println("🔧 初始化服务组件...")
 	blockService := service.NewBlockService(ethClient)
 	txService := service.NewTxService(ethClient)
@@ -64,6 +87,27 @@ func main() {
 	if err != nil {
 		log.Fatalf("❌ 事件服务初始化失败: %v", err)
 	}
+
+	var txSendService *service.TxSendService
+	if signer != nil {
+		txSendService = service.NewTxSendService(ethClient, signer, cfg.Network, cfg.NetworkConfig.ChainID, txHistoryStore)
+		log.Println("✅ 交易发送服务初始化完成")
+	}
+
+	log.Println("🔧 初始化合约服务...")
+	var contractService *service.ContractService
+	if signer != nil {
+		contractService = service.NewContractService(ethClient, signer, cfg.Network, cfg.NetworkConfig.ChainID)
+		log.Println("✅ 合约服务初始化完成")
+	}
+
+	log.Println("🔧 初始化代币服务...")
+	var tokenService *service.TokenService
+	if signer != nil {
+		tokenService = service.NewTokenService(ethClient, signer, cfg.Network, cfg.NetworkConfig.ChainID)
+		log.Println("✅ 代币服务初始化完成")
+	}
+
 	log.Println("✅ 服务组件初始化完成")
 
 	log.Println("👂 启动 ERC20 Transfer 事件监听...")
@@ -71,7 +115,9 @@ func main() {
 
 	log.Println("🌐 启动 HTTP API 服务器 (端口: 8080)...")
 	handlers := api.NewHandlers(blockService, txService, eventStore)
-	server := api.NewServer(handlers, ":8080")
+	txHandlers := api.NewTxHandlers(txSendService, txHistoryStore)
+	contractHandlers := api.NewContractHandlers(contractService, tokenService)
+	server := api.NewServer(handlers, txHandlers, contractHandlers, ":8080")
 
 	go func() {
 		if err := server.Start(); err != nil && err != http.ErrServerClosed {
@@ -85,6 +131,14 @@ func main() {
 	log.Println("     - GET /api/block/{id}")
 	log.Println("     - GET /api/tx/{hash}")
 	log.Println("     - GET /api/events")
+	log.Println("     - POST /api/tx/send")
+	log.Println("     - GET /api/tx/history")
+	log.Println("     - GET /api/tx/detail")
+	log.Println("     - POST /api/contract/view")
+	log.Println("     - POST /api/contract/call")
+	log.Println("     - GET /api/token/info")
+	log.Println("     - GET /api/token/balance")
+	log.Println("     - POST /api/token/transfer")
 	log.Println("=============================================")
 
 	sigCh := make(chan os.Signal, 1)
@@ -103,6 +157,10 @@ func main() {
 
 	log.Println("🔄 停止事件监听...")
 	cancel()
+
+	log.Println("🔄 关闭数据库...")
+	txHistoryStore.Close()
+	log.Println("✅ 数据库已关闭")
 
 	log.Println("=============================================")
 	log.Println("  ✅ 服务已完全关闭，再见！")

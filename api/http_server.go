@@ -8,24 +8,36 @@ import (
 )
 
 type Server struct {
-	httpServer *http.Server
-	handlers   *Handlers
+	httpServer       *http.Server
+	handlers         *Handlers
+	txHandlers       *TxHandlers
+	contractHandlers *ContractHandlers
 }
 
-func NewServer(handlers *Handlers, addr string) *Server {
+func NewServer(handlers *Handlers, txHandlers *TxHandlers, contractHandlers *ContractHandlers, addr string) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/block/", handlers.GetBlock)
 	mux.HandleFunc("/api/tx/", handlers.GetTransaction)
 	mux.HandleFunc("/api/events", handlers.GetEvents)
+	mux.HandleFunc("/api/tx/send", txHandlers.SendTransaction)
+	mux.HandleFunc("/api/tx/history", txHandlers.GetTxHistory)
+	mux.HandleFunc("/api/tx/detail", txHandlers.GetTxByHash)
+	mux.HandleFunc("/api/contract/view", contractHandlers.ContractView)
+	mux.HandleFunc("/api/contract/call", contractHandlers.ContractCall)
+	mux.HandleFunc("/api/token/info", contractHandlers.TokenInfo)
+	mux.HandleFunc("/api/token/balance", contractHandlers.TokenBalance)
+	mux.HandleFunc("/api/token/transfer", contractHandlers.TokenTransfer)
 
 	return &Server{
-		httpServer: &http.Server{
+		httpServer:       &http.Server{
 			Addr:         addr,
 			Handler:      mux,
 			ReadTimeout:  5 * time.Second,
 			WriteTimeout: 10 * time.Second,
 		},
-		handlers: handlers,
+		handlers:         handlers,
+		txHandlers:       txHandlers,
+		contractHandlers: contractHandlers,
 	}
 }
 
@@ -35,6 +47,14 @@ func (s *Server) Start() error {
 	log.Println("   - GET /api/block/{id}")
 	log.Println("   - GET /api/tx/{hash}")
 	log.Println("   - GET /api/events")
+	log.Println("   - POST /api/tx/send")
+	log.Println("   - GET /api/tx/history")
+	log.Println("   - GET /api/tx/detail")
+	log.Println("   - POST /api/contract/view")
+	log.Println("   - POST /api/contract/call")
+	log.Println("   - GET /api/token/info")
+	log.Println("   - GET /api/token/balance")
+	log.Println("   - POST /api/token/transfer")
 	return s.httpServer.ListenAndServe()
 }
 
