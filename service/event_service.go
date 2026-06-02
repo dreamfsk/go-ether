@@ -15,6 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/meu/go-ether/client"
+	"github.com/meu/go-ether/config"
 	"github.com/meu/go-ether/store"
 )
 
@@ -35,13 +36,14 @@ func loadABI() (string, error) {
 }
 
 type EventService struct {
-	client   *client.EthClient
-	store    *store.EventStore
-	contract common.Address
-	abi      abi.ABI
+	client    *client.EthClient
+	txHistory *store.TxHistoryStore
+	contract  common.Address
+	network   string
+	abi       abi.ABI
 }
 
-func NewEventService(c *client.EthClient, s *store.EventStore, contractAddr string) (*EventService, error) {
+func NewEventService(c *client.EthClient, txHistory *store.TxHistoryStore, network config.NetworkType, contractAddr string) (*EventService, error) {
 	log.Printf("🔧 [EventService] 初始化，合约地址: %s", contractAddr)
 
 	abiJSON, err := loadABI()
@@ -59,10 +61,11 @@ func NewEventService(c *client.EthClient, s *store.EventStore, contractAddr stri
 
 	log.Println("✅ [EventService] ABI 解析成功")
 	return &EventService{
-		client:   c,
-		store:    s,
-		contract: common.HexToAddress(contractAddr),
-		abi:      parsedABI,
+		client:    c,
+		txHistory: txHistory,
+		contract:  common.HexToAddress(contractAddr),
+		network:   string(network),
+		abi:       parsedABI,
 	}, nil
 }
 
@@ -100,11 +103,9 @@ func (s *EventService) StartListening(ctx context.Context) {
 
 func (s *EventService) processLog(vLog types.Log) {
 	if len(vLog.Topics) == 0 {
-		log.Printf("⚠️  [EventService] 跳过无效日志（无 Topics）")
 		return
 	}
 
-	// 检查是否为 Transfer 事件 (topic hash)
 	transferEventSig := s.abi.Events["Transfer"].ID
 	if vLog.Topics[0] != transferEventSig {
 		return
@@ -129,12 +130,19 @@ func (s *EventService) processLog(vLog types.Log) {
 	log.Printf("💸 [EventService] 捕获 Transfer 事件: 从 %s 到 %s, 数量: %s",
 		event.From.Hex(), event.To.Hex(), event.Value.String())
 
-	s.store.Add(store.TransferEvent{
-		BlockNumber: vLog.BlockNumber,
-		TxHash:      vLog.TxHash.Hex(),
-		From:        event.From.Hex(),
-		To:          event.To.Hex(),
-		Value:       event.Value.String(),
-		Timestamp:   time.Now(),
-	})
+	if s.txHistory != nil {
+		if err := s.txHistory.Add(store.TxHistoryEntry{
+			TxHash:      vLog.TxHash.Hex(),
+			FromAddr:    event.From.Hex(),
+			ToAddr:      event.To.Hex(),
+			Value:       event.Value.String(),
+			BlockNumber: vLog.BlockNumber,
+			Status:      store.TxStatusSuccess,
+			Network:     s.network,
+			TxType:      "erc20_transfer",
+			CreatedAt:   time.Now(),
+		}); err != nil {
+			log.Printf("⚠️  [EventService] 持久化事件失败: %v", err)
+		}
+	}
 }

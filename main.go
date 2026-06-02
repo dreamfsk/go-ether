@@ -56,10 +56,6 @@ func main() {
 	log.Println("✅ 以太坊节点连接成功")
 	defer ethClient.Close()
 
-	log.Println("📦 初始化事件存储 (最多 100 条)...")
-	eventStore := store.NewEventStore(100)
-	log.Println("✅ 事件存储初始化完成")
-
 	log.Println("📦 初始化 SQLite 交易历史存储...")
 	txHistoryStore, err := store.NewTxHistoryStore("transactions.db")
 	if err != nil {
@@ -83,7 +79,7 @@ func main() {
 	log.Println("🔧 初始化服务组件...")
 	blockService := service.NewBlockService(ethClient)
 	txService := service.NewTxService(ethClient)
-	eventService, err := service.NewEventService(ethClient, eventStore, cfg.ERC20Contract)
+	eventService, err := service.NewEventService(ethClient, txHistoryStore, cfg.Network, cfg.ERC20Contract)
 	if err != nil {
 		log.Fatalf("❌ 事件服务初始化失败: %v", err)
 	}
@@ -118,7 +114,7 @@ func main() {
 	go eventService.StartListening(ctx)
 
 	log.Println("🌐 启动 HTTP API 服务器 (端口: 8080)...")
-	handlers := api.NewHandlers(blockService, txService, eventStore)
+	handlers := api.NewHandlers(blockService, txService, txHistoryStore)
 	txHandlers := api.NewTxHandlers(txSendService, txHistoryStore)
 	contractHandlers := api.NewContractHandlers(contractService, erc20Service)
 	server := api.NewServer(handlers, txHandlers, contractHandlers, ":8080")
@@ -144,6 +140,7 @@ func main() {
 	log.Println("     - GET /api/token/balance")
 	log.Println("     - POST /api/token/transfer")
 	log.Println("     - POST /api/token/mint")
+	log.Println("     - POST /api/token/deploy")
 	log.Println("=============================================")
 
 	sigCh := make(chan os.Signal, 1)

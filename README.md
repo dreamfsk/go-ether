@@ -9,17 +9,18 @@
 ### 核心功能
 - **区块查询**：支持通过区块号或哈希查询区块详情
 - **交易查询**：查询交易详情、输入数据和回执信息
-- **ERC-20 事件监听**：实时监听 Transfer 事件，自动保存到内存和数据库
+- **ERC-20 事件监听**：实时监听 Transfer 事件，持久化到 SQLite 数据库
 - **交易发送**：支持 ETH 转账，自动处理 Gas 估算和交易签名
 - **合约交互**：支持调用合约视图方法和发送合约交易
 - **代币管理**：查询代币信息、余额，支持代币转账、铸造及部署
 - **合约部署**：支持通过 API 部署 MyERC20 合约
+- **历史追溯**：SQLite 统一存储，通过 `tx_type` 区分 ETH 转账和 ERC20 事件，支持按类型查询
 
 ### 架构特性
 - **分层架构**：Client → Service → API / Store
 - **多网络支持**：支持 Sepolia 测试网和本地测试链
 - **类型安全绑定**：使用 abigen 生成的 Go 合约绑定，无需手动编码 ABI
-- **持久化存储**：SQLite 存储交易历史
+- **统一持久化**：所有交易和事件数据统一存储到 SQLite，通过 `tx_type` 区分类型
 - **优雅关闭**：支持 SIGINT/SIGTERM 信号处理
 - **实时监控**：WebSocket 订阅 ERC-20 事件
 
@@ -51,22 +52,26 @@
             │                    │                   │
             └────────────────────┼───────────────────┘
                                  ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                        Client Layer                            │
-│                    ┌─────────────────┐                        │
-│                    │   EthClient     │                        │
-│                    │ (go-ethereum)   │                        │
-│                    └─────────────────┘                        │
-└─────────────────────────────────────────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    External Services                           │
-│  ┌───────────────┐                ┌─────────────────────┐      │
-│  │ Ethereum Node │                │      SQLite DB      │      │
-│  │ (Sepolia/Local)│              │ (Tx History)        │      │
-│  └───────────────┘                └─────────────────────┘      │
-└─────────────────────────────────────────────────────────────────┘
+                    ┌────────────────────────┐
+                    │     SQLite 统一存储     │
+                    │  (tx_history 表)       │
+                    │  tx_type 区分:         │
+                    │  - eth_transfer        │
+                    │  - erc20_transfer      │
+                    └────────────────────────┘
+```
+
+### 数据流
+
+```
+ETH 转账:  POST /api/tx/send → TxSendService → SQLite (tx_type=eth_transfer, status=pending)
+                                              └→ 异步更新 status + block_number
+
+ERC20 事件: WebSocket 监听 → EventService → SQLite (tx_type=erc20_transfer, status=success)
+
+API 查询:
+  GET /api/tx/history → List(limit, offset)       → 全部类型
+  GET /api/events     → ListByType(erc20_transfer) → 仅 ERC20 事件
 ```
 
 ### 包结构
@@ -91,13 +96,12 @@ go-ether/
 ├── service/                 # 业务服务层
 │   ├── block_service.go     # 区块查询服务
 │   ├── tx_service.go        # 交易查询服务
-│   ├── tx_send_service.go   # ETH 交易发送服务
-│   ├── event_service.go     # ERC20 事件监听服务
-│   ├── contract_service.go  # 通用合约调用服务
-│   └── erc20_service.go     # ERC20 代币服务（基于 abigen 绑定）
-├── store/                   # 数据存储层
-│   ├── memory_store.go      # 内存事件存储
-│   └── tx_history_store.go  # SQLite 交易历史存储
+│   ├── tx_send_service.go   # ETH 交易发送服务（写入 SQLite）
+│   ├── event_service.go     # ERC20 事件监听服务（写入 SQLite）
+│   ├── contract_service.go  # 通用合约调用服务（动态 selector 缓存）
+│   └── erc20_service.go     # ERC20 代币服务（基于 abigen 绑定，含部署）
+├── store/                   # 数据存储层（SQLite 统一存储）
+│   └── tx_history_store.go  # 交易/事件存储，支持按 tx_type 查询
 ├── tests/                   # 单元测试（统一测试目录）
 ├── wallet/                  # 钱包管理
 │   └── signer.go            # 环境变量私钥签名器
@@ -122,16 +126,16 @@ go-ether/
 
 | 方法 | 路径 | 描述 | 参数 |
 |------|------|------|------|
-| GET | `/api/tx/{hash}` | 查询交易 | `hash`: 交易哈希 |
+| GET | `/api/tx/{hash}` | 查询链上交易 | `hash`: 交易哈希 |
 | POST | `/api/tx/send` | 发送 ETH 交易 | `{"to", "value"}` |
-| GET | `/api/tx/history` | 交易历史 | `page`, `pageSize` |
-| GET | `/api/tx/detail` | 交易详情 | `hash` |
+| GET | `/api/tx/history` | 交易历史（含 ETH + ERC20） | `page`, `pageSize` |
+| GET | `/api/tx/detail` | 本地交易详情 | `hash` |
 
 ### 事件相关
 
 | 方法 | 路径 | 描述 | 参数 |
 |------|------|------|------|
-| GET | `/api/events` | 查询 Transfer 事件 | - |
+| GET | `/api/events` | 查询 ERC20 Transfer 事件 | -（返回最近 100 条 `erc20_transfer`） |
 
 ### 合约相关
 
@@ -149,6 +153,15 @@ go-ether/
 | POST | `/api/token/transfer` | 代币转账 | `{"to", "amount"}` |
 | POST | `/api/token/mint` | 铸造代币 | `{"to", "amount"}` |
 | POST | `/api/token/deploy` | 部署 MyERC20 合约 | `{"name", "symbol", "initialSupply", "recipient"}` |
+
+### 数据字段说明
+
+`tx_type` 取值：
+
+| tx_type | 含义 | 写入来源 |
+|---------|------|---------|
+| `eth_transfer` | ETH 转账 | `TxSendService` 主动发送 |
+| `erc20_transfer` | ERC20 代币 Transfer 事件 | `EventService` 链上监听 |
 
 ## 本地安装与启动
 
@@ -235,6 +248,18 @@ curl -X POST http://localhost:8080/api/tx/send \
   -d '{"to": "0xReceiverAddress", "value": "1000000000000000000"}'
 ```
 
+### 查询交易历史
+
+```bash
+curl "http://localhost:8080/api/tx/history?page=1&pageSize=20"
+```
+
+### 查询 Transfer 事件
+
+```bash
+curl http://localhost:8080/api/events
+```
+
 ### 查询代币信息
 
 ```bash
@@ -288,15 +313,15 @@ curl -X POST http://localhost:8080/api/token/deploy \
 ### 调用合约方法
 
 ```bash
-# 视图方法（只读）
+# 视图方法
 curl -X POST http://localhost:8080/api/contract/view \
   -H "Content-Type: application/json" \
-  -d '{"contractAddr": "0xContractAddress", "method": "owner"}'
+  -d '{"contractAddr": "0xContractAddress", "method": "name"}'
 
 # 写方法（需要签名）
 curl -X POST http://localhost:8080/api/contract/call \
   -H "Content-Type: application/json" \
-  -d '{"contractAddr": "0xContractAddress", "method": "increment"}'
+  -d '{"contractAddr": "0xContractAddress", "method": "transfer", "args": ["0xTo", "1000000000000000000"]}'
 ```
 
 ## 网络配置

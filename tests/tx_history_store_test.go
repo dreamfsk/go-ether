@@ -95,6 +95,55 @@ func TestTxHistoryStore_List(t *testing.T) {
 	}
 }
 
+func TestTxHistoryStore_ListByType(t *testing.T) {
+	txStore, err := store.NewTxHistoryStore(":memory:")
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer txStore.Close()
+
+	txStore.Add(store.TxHistoryEntry{
+		TxHash:    "0xerc20-1",
+		FromAddr:  "0xaaa",
+		ToAddr:    "0xbbb",
+		Value:     "100",
+		Status:    store.TxStatusSuccess,
+		Network:   "local",
+		TxType:    "erc20_transfer",
+		CreatedAt: time.Now(),
+	})
+
+	txStore.Add(store.TxHistoryEntry{
+		TxHash:    "0xeth-1",
+		FromAddr:  "0xccc",
+		ToAddr:    "0xddd",
+		Value:     "200",
+		Status:    store.TxStatusPending,
+		Network:   "local",
+		TxType:    "eth_transfer",
+		CreatedAt: time.Now(),
+	})
+
+	list, err := txStore.ListByType("erc20_transfer", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Errorf("expected 1 erc20 event, got %d", len(list))
+	}
+	if list[0].TxType != "erc20_transfer" {
+		t.Errorf("expected tx_type erc20_transfer, got %s", list[0].TxType)
+	}
+
+	all, err := txStore.List(10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Errorf("expected 2 total, got %d", len(all))
+	}
+}
+
 func TestTxHistoryStore_UpdateStatus(t *testing.T) {
 	txStore, err := store.NewTxHistoryStore(":memory:")
 	if err != nil {
