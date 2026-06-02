@@ -39,7 +39,7 @@ func (h *TxHandlers) SendTransaction(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📥 [API] POST /api/tx/send - 目标: %s, 金额: %s", req.To, req.Value)
 
 	if h.txSendService == nil {
-		http.Error(w, "Transaction send service not available", http.StatusServiceUnavailable)
+		RequireSigner(w, "ETH 交易发送")
 		return
 	}
 

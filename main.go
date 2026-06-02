@@ -102,13 +102,17 @@ func main() {
 	if signer != nil {
 		erc20Service, err = service.NewERC20Service(ethClient, signer, cfg.Network, cfg.NetworkConfig.ChainID, cfg.ERC20Contract)
 		if err != nil {
-			log.Printf("⚠️  ERC20 服务初始化失败: %v", err)
-		} else {
-			log.Println("✅ ERC20 服务初始化完成")
+			log.Fatalf("❌ ERC20 服务初始化失败: %v", err)
 		}
+		log.Println("✅ ERC20 服务初始化完成")
 	}
 
 	log.Println("✅ 服务组件初始化完成")
+	if signer == nil {
+		log.Println("⚠️  未配置签名钱包，将以只读模式运行（交易发送、合约写调用、代币操作不可用）")
+	} else {
+		log.Println("🔐 签名钱包已配置，全功能模式运行")
+	}
 
 	log.Println("👂 启动 ERC20 Transfer 事件监听...")
 	go eventService.StartListening(ctx)
@@ -131,16 +135,18 @@ func main() {
 	log.Println("     - GET /api/block/{id}")
 	log.Println("     - GET /api/tx/{hash}")
 	log.Println("     - GET /api/events")
-	log.Println("     - POST /api/tx/send")
 	log.Println("     - GET /api/tx/history")
 	log.Println("     - GET /api/tx/detail")
 	log.Println("     - POST /api/contract/view")
-	log.Println("     - POST /api/contract/call")
 	log.Println("     - GET /api/token/info")
 	log.Println("     - GET /api/token/balance")
-	log.Println("     - POST /api/token/transfer")
-	log.Println("     - POST /api/token/mint")
-	log.Println("     - POST /api/token/deploy")
+	if signer != nil {
+		log.Println("     - POST /api/tx/send")
+		log.Println("     - POST /api/contract/call")
+		log.Println("     - POST /api/token/transfer")
+		log.Println("     - POST /api/token/mint")
+		log.Println("     - POST /api/token/deploy")
+	}
 	log.Println("=============================================")
 
 	sigCh := make(chan os.Signal, 1)

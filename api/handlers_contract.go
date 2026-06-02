@@ -73,7 +73,7 @@ func (h *ContractHandlers) ContractCall(w http.ResponseWriter, r *http.Request) 
 	log.Printf("📥 [API] POST /api/contract/call - 方法: %s, 合约: %s", req.Method, req.ContractAddr)
 
 	if h.contractService == nil {
-		http.Error(w, "Contract service not available", http.StatusServiceUnavailable)
+		RequireSigner(w, "合约交易调用")
 		return
 	}
 
@@ -168,7 +168,7 @@ func (h *ContractHandlers) TokenTransfer(w http.ResponseWriter, r *http.Request)
 	log.Printf("📥 [API] POST /api/token/transfer - to: %s, amount: %s", req.To, req.Amount)
 
 	if h.erc20Service == nil {
-		http.Error(w, "ERC20 service not available", http.StatusServiceUnavailable)
+		RequireSigner(w, "代币转账")
 		return
 	}
 
@@ -215,7 +215,7 @@ func (h *ContractHandlers) TokenMint(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📥 [API] POST /api/token/mint - to: %s, amount: %s", req.To, req.Amount)
 
 	if h.erc20Service == nil {
-		http.Error(w, "ERC20 service not available", http.StatusServiceUnavailable)
+		RequireSigner(w, "代币铸造")
 		return
 	}
 
@@ -269,7 +269,7 @@ func (h *ContractHandlers) TokenDeploy(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📥 [API] POST /api/token/deploy - name: %s, symbol: %s, recipient: %s", req.Name, req.Symbol, req.Recipient)
 
 	if h.erc20Service == nil {
-		http.Error(w, "ERC20 service not available", http.StatusServiceUnavailable)
+		RequireSigner(w, "合约部署")
 		return
 	}
 
