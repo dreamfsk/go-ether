@@ -184,6 +184,36 @@ func (s *TxHistoryStore) ListByType(txType string, limit, offset int) ([]TxHisto
 	return entries, nil
 }
 
+func (s *TxHistoryStore) ListByTypeAndAddress(txType, address string, limit, offset int) ([]TxHistoryEntry, error) {
+	rows, err := s.db.Query(`
+	SELECT id, tx_hash, from_addr, to_addr, value, gas_limit, gas_price, 
+	       nonce, data, status, block_number, network, tx_type, created_at
+	FROM tx_history WHERE tx_type = ? AND (from_addr = ? OR to_addr = ?) 
+	ORDER BY created_at DESC LIMIT ? OFFSET ?`, txType, address, address, limit, offset)
+	if err != nil {
+		log.Printf("❌ [TxHistoryStore] 按类型和地址查询交易列表失败: %v", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []TxHistoryEntry
+	for rows.Next() {
+		var entry TxHistoryEntry
+		err := rows.Scan(
+			&entry.ID, &entry.TxHash, &entry.FromAddr, &entry.ToAddr,
+			&entry.Value, &entry.GasLimit, &entry.GasPrice, &entry.Nonce,
+			&entry.Data, &entry.Status, &entry.BlockNumber, &entry.Network,
+			&entry.TxType, &entry.CreatedAt)
+		if err != nil {
+			log.Printf("❌ [TxHistoryStore] 按类型和地址扫描交易记录失败: %v", err)
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+
+	return entries, nil
+}
+
 func (s *TxHistoryStore) UpdateStatus(txHash string, status TxStatus, blockNumber uint64) error {
 	_, err := s.db.Exec(`
 	UPDATE tx_history SET status = ?, block_number = ? WHERE tx_hash = ?`,
@@ -202,6 +232,26 @@ func (s *TxHistoryStore) Count() (int, error) {
 	var count int
 	err := s.db.QueryRow("SELECT COUNT(*) FROM tx_history").Scan(&count)
 	return count, err
+}
+
+func (s *TxHistoryStore) CountByType(txType string) (int, error) {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM tx_history WHERE tx_type = ?", txType).Scan(&count)
+	if err != nil {
+		log.Printf("❌ [TxHistoryStore] 按类型统计失败: %v", err)
+		return 0, err
+	}
+	return count, nil
+}
+
+func (s *TxHistoryStore) CountByTypeAndAddress(txType, address string) (int, error) {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM tx_history WHERE tx_type = ? AND (from_addr = ? OR to_addr = ?)", txType, address, address).Scan(&count)
+	if err != nil {
+		log.Printf("❌ [TxHistoryStore] 按类型和地址统计失败: %v", err)
+		return 0, err
+	}
+	return count, nil
 }
 
 func (s *TxHistoryStore) Close() error {

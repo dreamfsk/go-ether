@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -72,32 +73,64 @@ func NewEventService(c *client.EthClient, txHistory *store.TxHistoryStore, netwo
 func (s *EventService) StartListening(ctx context.Context) {
 	log.Println("👂 [EventService] 开始订阅 ERC20 Transfer 事件...")
 
-	query := ethereum.FilterQuery{
-		Addresses: []common.Address{s.contract},
-	}
+	var attempt int
 
-	logsCh := make(chan types.Log)
-	sub, err := s.client.SubscribeFilterLogs(ctx, query, logsCh)
-	if err != nil {
-		log.Printf("❌ [EventService] 事件订阅失败: %v", err)
-		return
-	}
-	defer sub.Unsubscribe()
-
-	log.Printf("✅ [EventService] 事件订阅成功，监听合约: %s", s.contract.Hex())
-
+RECONNECT:
 	for {
 		select {
-		case vLog := <-logsCh:
-			log.Printf("📨 [EventService] 收到日志，区块 #%d，交易: %s", vLog.BlockNumber, vLog.TxHash.Hex())
-			s.processLog(vLog)
-		case err := <-sub.Err():
-			log.Printf("❌ [EventService] 订阅错误: %v", err)
-			return
 		case <-ctx.Done():
 			log.Println("🔄 [EventService] 上下文被取消，停止监听")
 			return
+		default:
 		}
+
+		attempt++
+		log.Printf("🔄 [EventService] 连接尝试 #%d", attempt)
+
+		query := ethereum.FilterQuery{
+			Addresses: []common.Address{s.contract},
+		}
+
+		logsCh := make(chan types.Log)
+		sub, err := s.client.SubscribeFilterLogs(ctx, query, logsCh)
+		if err != nil {
+			log.Printf("❌ [EventService] 事件订阅失败: %v", err)
+			s.sleepWithBackoff(ctx, attempt)
+			continue RECONNECT
+		}
+
+		log.Printf("✅ [EventService] 事件订阅成功，监听合约: %s", s.contract.Hex())
+
+		for {
+			select {
+			case vLog := <-logsCh:
+				log.Printf("📨 [EventService] 收到日志，区块 #%d，交易: %s", vLog.BlockNumber, vLog.TxHash.Hex())
+				s.processLog(vLog)
+			case err := <-sub.Err():
+				log.Printf("❌ [EventService] 订阅错误: %v", err)
+				sub.Unsubscribe()
+				s.sleepWithBackoff(ctx, attempt)
+				continue RECONNECT
+			case <-ctx.Done():
+				log.Println("🔄 [EventService] 上下文被取消，停止监听")
+				sub.Unsubscribe()
+				return
+			}
+		}
+	}
+}
+
+func (s *EventService) sleepWithBackoff(ctx context.Context, attempt int) {
+	sec := int(math.Min(60, math.Pow(2, float64(attempt))))
+	d := time.Duration(sec) * time.Second
+	log.Printf("⏳ [EventService] 将在 %s 后尝试重连", d)
+
+	t := time.NewTimer(d)
+	defer t.Stop()
+
+	select {
+	case <-t.C:
+	case <-ctx.Done():
 	}
 }
 

@@ -131,22 +131,6 @@ func main() {
 	log.Println("✅ HTTP API 服务器启动完成")
 	log.Println("=============================================")
 	log.Println("  🚀 服务已就绪，等待请求...")
-	log.Println("  📡 API 端点:")
-	log.Println("     - GET /api/block/{id}")
-	log.Println("     - GET /api/tx/{hash}")
-	log.Println("     - GET /api/events")
-	log.Println("     - GET /api/tx/history")
-	log.Println("     - GET /api/tx/detail")
-	log.Println("     - POST /api/contract/view")
-	log.Println("     - GET /api/token/info")
-	log.Println("     - GET /api/token/balance")
-	if signer != nil {
-		log.Println("     - POST /api/tx/send")
-		log.Println("     - POST /api/contract/call")
-		log.Println("     - POST /api/token/transfer")
-		log.Println("     - POST /api/token/mint")
-		log.Println("     - POST /api/token/deploy")
-	}
 	log.Println("=============================================")
 
 	sigCh := make(chan os.Signal, 1)

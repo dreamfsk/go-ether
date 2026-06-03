@@ -31,6 +31,26 @@ func TestConvertBlock(t *testing.T) {
 		t.Errorf("BlockInfo.TxCount = %v, want 10", blockInfo.TxCount)
 	}
 
+	if blockInfo.Hash != "0x1234567890abcdef" {
+		t.Errorf("BlockInfo.Hash = %v, want 0x1234567890abcdef", blockInfo.Hash)
+	}
+
+	if blockInfo.ParentHash != "0xabcdef1234567890" {
+		t.Errorf("BlockInfo.ParentHash = %v, want 0xabcdef1234567890", blockInfo.ParentHash)
+	}
+
+	if blockInfo.Timestamp != 1234567890 {
+		t.Errorf("BlockInfo.Timestamp = %v, want 1234567890", blockInfo.Timestamp)
+	}
+
+	if blockInfo.GasUsed != 210000 {
+		t.Errorf("BlockInfo.GasUsed = %v, want 210000", blockInfo.GasUsed)
+	}
+
+	if blockInfo.GasLimit != 30000000 {
+		t.Errorf("BlockInfo.GasLimit = %v, want 30000000", blockInfo.GasLimit)
+	}
+
 	if blockInfo.GasUsedPercent != 0.7 {
 		t.Errorf("BlockInfo.GasUsedPercent = %v, want 0.7", blockInfo.GasUsedPercent)
 	}
