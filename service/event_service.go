@@ -103,9 +103,11 @@ func (s *EventService) StartListening(ctx context.Context) {
 
 func (s *EventService) processLog(vLog types.Log) {
 	if len(vLog.Topics) == 0 {
+		log.Printf("⚠️  [EventService] 跳过无效日志（无 Topics）")
 		return
 	}
 
+	// 检查是否为 Transfer 事件 (topic hash)
 	transferEventSig := s.abi.Events["Transfer"].ID
 	if vLog.Topics[0] != transferEventSig {
 		return
@@ -130,6 +132,7 @@ func (s *EventService) processLog(vLog types.Log) {
 	log.Printf("💸 [EventService] 捕获 Transfer 事件: 从 %s 到 %s, 数量: %s",
 		event.From.Hex(), event.To.Hex(), event.Value.String())
 
+	// 写入 SQLite 持久化
 	if s.txHistory != nil {
 		if err := s.txHistory.Add(store.TxHistoryEntry{
 			TxHash:      vLog.TxHash.Hex(),
@@ -137,7 +140,7 @@ func (s *EventService) processLog(vLog types.Log) {
 			ToAddr:      event.To.Hex(),
 			Value:       event.Value.String(),
 			BlockNumber: vLog.BlockNumber,
-			Status:      store.TxStatusSuccess,
+			Status:      store.TxStatusSuccess, // 链上事件已确认
 			Network:     s.network,
 			TxType:      "erc20_transfer",
 			CreatedAt:   time.Now(),

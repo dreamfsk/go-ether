@@ -75,7 +75,6 @@ func createTxHistoryTable(db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_tx_hash ON tx_history(tx_hash);
 	CREATE INDEX IF NOT EXISTS idx_from_addr ON tx_history(from_addr);
 	CREATE INDEX IF NOT EXISTS idx_network ON tx_history(network);
-	CREATE INDEX IF NOT EXISTS idx_tx_type ON tx_history(tx_type);
 	`
 
 	_, err := db.Exec(query)
@@ -138,24 +137,6 @@ func (s *TxHistoryStore) List(limit, offset int) ([]TxHistoryEntry, error) {
 	}
 	defer rows.Close()
 
-	return scanTxHistoryRows(rows)
-}
-
-func (s *TxHistoryStore) ListByType(txType string, limit, offset int) ([]TxHistoryEntry, error) {
-	rows, err := s.db.Query(`
-	SELECT id, tx_hash, from_addr, to_addr, value, gas_limit, gas_price, 
-	       nonce, data, status, block_number, network, tx_type, created_at
-	FROM tx_history WHERE tx_type = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`, txType, limit, offset)
-	if err != nil {
-		log.Printf("❌ [TxHistoryStore] 按类型查询失败: %v", err)
-		return nil, err
-	}
-	defer rows.Close()
-
-	return scanTxHistoryRows(rows)
-}
-
-func scanTxHistoryRows(rows *sql.Rows) ([]TxHistoryEntry, error) {
 	var entries []TxHistoryEntry
 	for rows.Next() {
 		var entry TxHistoryEntry
@@ -170,6 +151,36 @@ func scanTxHistoryRows(rows *sql.Rows) ([]TxHistoryEntry, error) {
 		}
 		entries = append(entries, entry)
 	}
+
+	return entries, nil
+}
+
+func (s *TxHistoryStore) ListByType(txType string, limit, offset int) ([]TxHistoryEntry, error) {
+	rows, err := s.db.Query(`
+	SELECT id, tx_hash, from_addr, to_addr, value, gas_limit, gas_price, 
+	       nonce, data, status, block_number, network, tx_type, created_at
+	FROM tx_history WHERE tx_type = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`, txType, limit, offset)
+	if err != nil {
+		log.Printf("❌ [TxHistoryStore] 按类型查询交易列表失败: %v", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []TxHistoryEntry
+	for rows.Next() {
+		var entry TxHistoryEntry
+		err := rows.Scan(
+			&entry.ID, &entry.TxHash, &entry.FromAddr, &entry.ToAddr,
+			&entry.Value, &entry.GasLimit, &entry.GasPrice, &entry.Nonce,
+			&entry.Data, &entry.Status, &entry.BlockNumber, &entry.Network,
+			&entry.TxType, &entry.CreatedAt)
+		if err != nil {
+			log.Printf("❌ [TxHistoryStore] 按类型扫描交易记录失败: %v", err)
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+
 	return entries, nil
 }
 

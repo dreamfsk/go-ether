@@ -12,16 +12,16 @@ import (
 )
 
 type Handlers struct {
-	blockService *service.BlockService
-	txService    *service.TxService
-	txHistory    *store.TxHistoryStore
+	blockService   *service.BlockService
+	txService      *service.TxService
+	txHistoryStore *store.TxHistoryStore
 }
 
-func NewHandlers(bs *service.BlockService, ts *service.TxService, txHistory *store.TxHistoryStore) *Handlers {
+func NewHandlers(bs *service.BlockService, ts *service.TxService, ths *store.TxHistoryStore) *Handlers {
 	return &Handlers{
-		blockService: bs,
-		txService:    ts,
-		txHistory:    txHistory,
+		blockService:   bs,
+		txService:      ts,
+		txHistoryStore: ths,
 	}
 }
 
@@ -29,7 +29,7 @@ func (h *Handlers) GetBlock(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	id := strings.TrimPrefix(r.URL.Path, "/api/block/")
 	log.Printf("📥 [API] GET /api/block/%s from %s", id, r.RemoteAddr)
-
+	
 	if id == "" {
 		log.Printf("❌ [API] GET /api/block/: Bad request - 缺少区块 ID")
 		http.Error(w, "block ID required", http.StatusBadRequest)
@@ -52,7 +52,7 @@ func (h *Handlers) GetTransaction(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	hash := strings.TrimPrefix(r.URL.Path, "/api/tx/")
 	log.Printf("📥 [API] GET /api/tx/%s from %s", hash, r.RemoteAddr)
-
+	
 	if hash == "" {
 		log.Printf("❌ [API] GET /api/tx/: Bad request - 缺少交易哈希")
 		http.Error(w, "transaction hash required", http.StatusBadRequest)
@@ -74,14 +74,14 @@ func (h *Handlers) GetTransaction(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) GetEvents(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	log.Printf("📥 [API] GET /api/events from %s", r.RemoteAddr)
-
-	events, err := h.txHistory.ListByType("erc20_transfer", 100, 0)
+	
+	events, err := h.txHistoryStore.ListByType("erc20_transfer", 100, 0)
 	if err != nil {
 		log.Printf("❌ [API] GET /api/events: 查询失败 - %v", err)
 		http.Error(w, "failed to get events: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-
+	
 	log.Printf("✅ [API] GET /api/events: 成功获取 %d 条事件, 耗时 %v", len(events), time.Since(start))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(events)

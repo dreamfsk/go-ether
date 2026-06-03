@@ -21,8 +21,6 @@
 - **多网络支持**：支持 Sepolia 测试网和本地测试链
 - **类型安全绑定**：使用 abigen 生成的 Go 合约绑定，无需手动编码 ABI
 - **统一持久化**：所有交易和事件数据统一存储到 SQLite，通过 `tx_type` 区分类型
-- **双模式运行**：无签名钱包时以只读模式运行，有签名钱包时为全功能模式
-- **签名前置校验**：写操作调用前统一校验签名服务，未配置时返回友好提示
 - **优雅关闭**：支持 SIGINT/SIGTERM 信号处理
 - **实时监控**：WebSocket 订阅 ERC-20 事件
 
@@ -81,7 +79,6 @@ API 查询:
 ```
 go-ether/
 ├── api/                     # HTTP API 层
-│   ├── middleware.go         # 签名校验公共方法
 │   ├── handlers.go          # 基础处理器（区块、交易、事件）
 │   ├── handlers_tx.go       # ETH 交易发送处理器
 │   ├── handlers_contract.go # 合约 & ERC20 处理器
@@ -127,35 +124,35 @@ go-ether/
 
 ### 交易相关
 
-| 方法 | 路径 | 描述 | 参数 | 签名 |
-|------|------|------|------|------|
-| GET | `/api/tx/{hash}` | 查询链上交易 | `hash`: 交易哈希 | - |
-| POST | `/api/tx/send` | 发送 ETH 交易 | `{"to", "value"}` | 需要 |
-| GET | `/api/tx/history` | 交易历史（含 ETH + ERC20） | `page`, `pageSize` | - |
-| GET | `/api/tx/detail` | 本地交易详情 | `hash` | - |
+| 方法 | 路径 | 描述 | 参数 |
+|------|------|------|------|
+| GET | `/api/tx/{hash}` | 查询链上交易 | `hash`: 交易哈希 |
+| POST | `/api/tx/send` | 发送 ETH 交易 | `{"to", "value"}` |
+| GET | `/api/tx/history` | 交易历史（含 ETH + ERC20） | `page`, `pageSize` |
+| GET | `/api/tx/detail` | 本地交易详情 | `hash` |
 
 ### 事件相关
 
-| 方法 | 路径 | 描述 | 参数 | 签名 |
-|------|------|------|------|------|
-| GET | `/api/events` | 查询 ERC20 Transfer 事件 | -（返回最近 100 条 `erc20_transfer`） | - |
+| 方法 | 路径 | 描述 | 参数 |
+|------|------|------|------|
+| GET | `/api/events` | 查询 ERC20 Transfer 事件 | -（返回最近 100 条 `erc20_transfer`） |
 
 ### 合约相关
 
-| 方法 | 路径 | 描述 | 参数 | 签名 |
-|------|------|------|------|------|
-| POST | `/api/contract/view` | 调用视图方法（只读） | `{"contractAddr", "method", "args"}` | - |
-| POST | `/api/contract/call` | 发送合约交易（写） | `{"contractAddr", "method", "args"}` | 需要 |
+| 方法 | 路径 | 描述 | 参数 |
+|------|------|------|------|
+| POST | `/api/contract/view` | 调用视图方法（只读） | `{"contractAddr", "method", "args"}` |
+| POST | `/api/contract/call` | 发送合约交易（写） | `{"contractAddr", "method", "args"}` |
 
 ### 代币相关
 
-| 方法 | 路径 | 描述 | 参数 | 签名 |
-|------|------|------|------|------|
-| GET | `/api/token/info` | 查询代币信息 | 无（使用 `.env` 配置的合约地址） | - |
-| GET | `/api/token/balance` | 查询余额 | `holder` | - |
-| POST | `/api/token/transfer` | 代币转账 | `{"to", "amount"}` | 需要 |
-| POST | `/api/token/mint` | 铸造代币 | `{"to", "amount"}` | 需要 |
-| POST | `/api/token/deploy` | 部署 MyERC20 合约 | `{"name", "symbol", "initialSupply", "recipient"}` | 需要 |
+| 方法 | 路径 | 描述 | 参数 |
+|------|------|------|------|
+| GET | `/api/token/info` | 查询代币信息 | 无（使用 `.env` 配置的合约地址） |
+| GET | `/api/token/balance` | 查询余额 | `holder` |
+| POST | `/api/token/transfer` | 代币转账 | `{"to", "amount"}` |
+| POST | `/api/token/mint` | 铸造代币 | `{"to", "amount"}` |
+| POST | `/api/token/deploy` | 部署 MyERC20 合约 | `{"name", "symbol", "initialSupply", "recipient"}` |
 
 ### 数据字段说明
 
@@ -165,24 +162,6 @@ go-ether/
 |---------|------|---------|
 | `eth_transfer` | ETH 转账 | `TxSendService` 主动发送 |
 | `erc20_transfer` | ERC20 代币 Transfer 事件 | `EventService` 链上监听 |
-
-### 运行模式
-
-服务支持两种运行模式，由是否配置 `SENDER_PRIVATE_KEY` 决定：
-
-| 模式 | 条件 | 可用功能 | 启动日志 |
-|------|------|---------|---------|
-| 只读模式 | 未设置 `SENDER_PRIVATE_KEY` | 区块/交易查询、事件查询、合约视图调用、代币信息/余额查询 | `⚠️ 未配置签名钱包，将以只读模式运行` |
-| 全功能模式 | 已设置 `SENDER_PRIVATE_KEY` | 只读功能 + ETH 转账、合约写调用、代币转账/铸造/部署 | `🔐 签名钱包已配置，全功能模式运行` |
-
-**签名校验失败响应**（调用需签名的端点但未配置钱包时）：
-
-```json
-{
-  "error": "ETH 交易发送 不可用：未配置 SENDER_PRIVATE_KEY，签名操作无法执行",
-  "hint": "请在 .env 文件中设置 SENDER_PRIVATE_KEY 以启用签名功能"
-}
-```
 
 ## 本地安装与启动
 
@@ -240,11 +219,11 @@ SENDER_PRIVATE_KEY=your_private_key_here
 ### 启动服务
 
 ```bash
-# 全功能模式（配置签名钱包）
-NETWORK=sepolia ERC20_CONTRACT=0x... SENDER_PRIVATE_KEY=... ./mini-block-explorer
+# 使用 .env 文件
+./mini-block-explorer
 
-# 只读模式（不配置签名钱包，仅查询功能）
-NETWORK=sepolia ERC20_CONTRACT=0x... ./mini-block-explorer
+# 或直接设置环境变量
+NETWORK=sepolia ERC20_CONTRACT=0x... SENDER_PRIVATE_KEY=... ./mini-block-explorer
 ```
 
 ## 使用示例
