@@ -11,14 +11,108 @@ import (
 
 type ContractHandlers struct {
 	contractService *service.ContractService
-	erc20Service    *service.ERC20Service
+	contractManager *service.ContractManager
 }
 
-func NewContractHandlers(contractService *service.ContractService, erc20Service *service.ERC20Service) *ContractHandlers {
+func NewContractHandlers(contractService *service.ContractService, contractManager *service.ContractManager) *ContractHandlers {
 	return &ContractHandlers{
 		contractService: contractService,
-		erc20Service:    erc20Service,
+		contractManager: contractManager,
 	}
+}
+
+func (h *ContractHandlers) getERC20Service() *service.ERC20Service {
+	if h.contractManager == nil {
+		return nil
+	}
+	return h.contractManager.GetERC20Service()
+}
+
+func (h *ContractHandlers) ContractList(w http.ResponseWriter, r *http.Request) {
+	if h.contractManager == nil {
+		http.Error(w, "Contract manager not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	contracts, err := h.contractManager.ListContracts()
+	if err != nil {
+		log.Printf("❌ [API] 查询合约列表失败: %v", err)
+		http.Error(w, "Failed to list contracts: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	current := h.contractManager.GetCurrentContract()
+	currentAddr := ""
+	if current != nil {
+		currentAddr = current.Address
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"contracts":      contracts,
+		"currentAddress": currentAddr,
+	})
+}
+
+func (h *ContractHandlers) ContractSwitch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if h.contractManager == nil {
+		http.Error(w, "Contract manager not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req struct {
+		Address string `json:"address"`
+	}
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if req.Address == "" {
+		http.Error(w, "address is required", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("📥 [API] POST /api/contract/switch - address: %s", req.Address)
+
+	if err := h.contractManager.SwitchContract(req.Address); err != nil {
+		log.Printf("❌ [API] 切换合约失败: %v", err)
+		http.Error(w, "Failed to switch contract: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	h.contractManager.StartListening()
+
+	log.Printf("✅ [API] 合约切换成功: %s", req.Address)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":  true,
+		"address":  req.Address,
+		"message":  "Contract switched successfully",
+	})
+}
+
+func (h *ContractHandlers) ContractCurrent(w http.ResponseWriter, r *http.Request) {
+	if h.contractManager == nil {
+		http.Error(w, "Contract manager not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	current := h.contractManager.GetCurrentContract()
+	if current == nil {
+		http.Error(w, "No active contract", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(current)
 }
 
 func (h *ContractHandlers) ContractView(w http.ResponseWriter, r *http.Request) {
@@ -92,12 +186,12 @@ func (h *ContractHandlers) ContractCall(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *ContractHandlers) TokenInfo(w http.ResponseWriter, r *http.Request) {
-	if h.erc20Service == nil {
+	if h.getERC20Service() == nil {
 		http.Error(w, "ERC20 service not available", http.StatusServiceUnavailable)
 		return
 	}
 
-	info, err := h.erc20Service.GetTokenInfo(r.Context())
+	info, err := h.getERC20Service().GetTokenInfo(r.Context())
 	if err != nil {
 		log.Printf("❌ [API] 查询代币信息失败: %v", err)
 		http.Error(w, "Failed to get token info: "+err.Error(), http.StatusInternalServerError)
@@ -113,7 +207,7 @@ func (h *ContractHandlers) TokenInfo(w http.ResponseWriter, r *http.Request) {
 		"symbol":       info.Symbol,
 		"decimals":     info.Decimals,
 		"totalSupply":  info.TotalSupply.String(),
-		"contractAddr": h.erc20Service.ContractAddress().Hex(),
+		"contractAddr": h.getERC20Service().ContractAddress().Hex(),
 	})
 }
 
@@ -127,12 +221,12 @@ func (h *ContractHandlers) TokenBalance(w http.ResponseWriter, r *http.Request) 
 
 	log.Printf("📥 [API] GET /api/token/balance - holder: %s", holderAddr)
 
-	if h.erc20Service == nil {
+	if h.getERC20Service() == nil {
 		http.Error(w, "ERC20 service not available", http.StatusServiceUnavailable)
 		return
 	}
 
-	balance, err := h.erc20Service.BalanceOf(r.Context(), holderAddr)
+	balance, err := h.getERC20Service().BalanceOf(r.Context(), holderAddr)
 	if err != nil {
 		log.Printf("❌ [API] 查询代币余额失败: %v", err)
 		http.Error(w, "Failed to get balance: "+err.Error(), http.StatusInternalServerError)
@@ -144,7 +238,7 @@ func (h *ContractHandlers) TokenBalance(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"holder":        holderAddr,
 		"balance":       balance.String(),
-		"contractAddr":  h.erc20Service.ContractAddress().Hex(),
+		"contractAddr":  h.getERC20Service().ContractAddress().Hex(),
 	})
 }
 
@@ -167,7 +261,7 @@ func (h *ContractHandlers) TokenTransfer(w http.ResponseWriter, r *http.Request)
 
 	log.Printf("📥 [API] POST /api/token/transfer - to: %s, amount: %s", req.To, req.Amount)
 
-	if h.erc20Service == nil {
+	if h.getERC20Service() == nil {
 		RequireSigner(w, "代币转账")
 		return
 	}
@@ -178,7 +272,7 @@ func (h *ContractHandlers) TokenTransfer(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	txHash, err := h.erc20Service.Transfer(r.Context(), req.To, amount)
+	txHash, err := h.getERC20Service().Transfer(r.Context(), req.To, amount)
 	if err != nil {
 		log.Printf("❌ [API] 代币转账失败: %v", err)
 		http.Error(w, "Failed to transfer: "+err.Error(), http.StatusInternalServerError)
@@ -214,7 +308,7 @@ func (h *ContractHandlers) TokenMint(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("📥 [API] POST /api/token/mint - to: %s, amount: %s", req.To, req.Amount)
 
-	if h.erc20Service == nil {
+	if h.getERC20Service() == nil {
 		RequireSigner(w, "代币铸造")
 		return
 	}
@@ -225,7 +319,7 @@ func (h *ContractHandlers) TokenMint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	txHash, err := h.erc20Service.Mint(r.Context(), req.To, amount)
+	txHash, err := h.getERC20Service().Mint(r.Context(), req.To, amount)
 	if err != nil {
 		log.Printf("❌ [API] 代币铸造失败: %v", err)
 		http.Error(w, "Failed to mint: "+err.Error(), http.StatusInternalServerError)
@@ -268,7 +362,7 @@ func (h *ContractHandlers) TokenDeploy(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("📥 [API] POST /api/token/deploy - name: %s, symbol: %s, recipient: %s", req.Name, req.Symbol, req.Recipient)
 
-	if h.erc20Service == nil {
+	if h.getERC20Service() == nil {
 		RequireSigner(w, "合约部署")
 		return
 	}
@@ -279,11 +373,18 @@ func (h *ContractHandlers) TokenDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.erc20Service.Deploy(r.Context(), req.Name, req.Symbol, initialSupply, req.Recipient)
+	result, err := h.getERC20Service().Deploy(r.Context(), req.Name, req.Symbol, initialSupply, req.Recipient)
 	if err != nil {
 		log.Printf("❌ [API] 合约部署失败: %v", err)
 		http.Error(w, "Failed to deploy: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	if h.contractManager != nil {
+		if err := h.contractManager.AddDeployedContract(result.Address, req.Name, req.Symbol, "", result.TxHash); err != nil {
+			log.Printf("⚠️  [API] 保存合约地址失败: %v", err)
+		}
+		h.contractManager.StartListening()
 	}
 
 	log.Printf("✅ [API] 合约部署交易发送成功: tx=%s, addr=%s", result.TxHash, result.Address)

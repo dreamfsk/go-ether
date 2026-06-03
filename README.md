@@ -9,12 +9,13 @@
 ### 核心功能
 - **区块查询**：支持通过区块号或哈希查询区块详情
 - **交易查询**：查询交易详情、输入数据和回执信息
-- **ERC-20 事件监听**：实时监听 Transfer 事件，持久化到 SQLite 数据库
+- **ERC-20 事件监听**：实时监听 Transfer 事件，持久化到 SQLite 数据库，支持断线自动重连
 - **交易发送**：支持 ETH 转账，自动处理 Gas 估算和交易签名
 - **合约交互**：支持调用合约视图方法和发送合约交易
 - **代币管理**：查询代币信息、余额，支持代币转账、铸造及部署
-- **合约部署**：支持通过 API 部署 MyERC20 合约
-- **历史追溯**：SQLite 统一存储，通过 `tx_type` 区分 ETH 转账和 ERC20 事件，支持按类型查询
+- **合约部署**：支持通过 API 部署 MyERC20 合约，部署后自动保存地址
+- **合约地址管理**：支持多合约地址管理，可通过 API 切换当前合约，支持 SQLite 持久化
+- **历史追溯**：SQLite 统一存储，通过 `tx_type` 区分 ETH 转账和 ERC20 事件，支持分页和地址过滤查询
 
 ### 架构特性
 - **分层架构**：Client → Service → API / Store
@@ -35,9 +36,9 @@
 │  │ /api/   │ │ /api/tx │ │ /api/token  │ │ /api/contract │    │
 │  │ block   │ │ /send   │ │ /info       │ │ /view         │    │
 │  │ /events │ │ /history│ │ /balance    │ │ /call         │    │
-│  │         │ │ /detail │ │ /transfer   │ │               │    │
-│  │         │ │         │ │ /mint       │ │               │    │
-│  │         │ │         │ │ /deploy     │ │               │    │
+│  │         │ │ /detail │ │ /transfer   │ │ /list         │    │
+│  │         │ │         │ │ /mint       │ │ /switch       │    │
+│  │         │ │         │ │ /deploy     │ │ /current      │    │
 │  └────┬────┘ └────┬────┘ └──────┬──────┘ └───────┬───────┘    │
 └───────┼──────────┼─────────────┼─────────────────┼───────────┘
         │          │             │                 │
@@ -47,6 +48,7 @@
 │  ┌─────────────────┐  ┌─────────────────┐  ┌───────────────┐   │
 │  │ BlockService    │  │ TxSendService   │  │ ContractService│   │
 │  │ TxService       │  │ ERC20Service    │  │ EventService  │   │
+│  │ ContractManager │  │                 │  │               │   │
 │  └────────┬────────┘  └────────┬────────┘  └───────┬───────┘   │
 └───────────┼────────────────────┼───────────────────┼───────────┘
             │                    │                   │
@@ -55,6 +57,7 @@
                     ┌────────────────────────┐
                     │     SQLite 统一存储     │
                     │  (tx_history 表)       │
+                    │  (contracts 表)        │
                     │  tx_type 区分:         │
                     │  - eth_transfer        │
                     │  - erc20_transfer      │
@@ -68,10 +71,16 @@ ETH 转账:  POST /api/tx/send → TxSendService → SQLite (tx_type=eth_transfe
                                               └→ 异步更新 status + block_number
 
 ERC20 事件: WebSocket 监听 → EventService → SQLite (tx_type=erc20_transfer, status=success)
+                                                         └→ 断线自动重连（指数退避）
+
+合约部署: POST /api/token/deploy → ERC20Service → ContractManager → SQLite (contracts 表)
+                                                         └→ 自动设为活跃合约
+
+合约切换: POST /api/contract/switch → ContractManager → 重启 EventService/ERC20Service
 
 API 查询:
   GET /api/tx/history → List(limit, offset)       → 全部类型
-  GET /api/events     → ListByType(erc20_transfer) → 仅 ERC20 事件
+  GET /api/events     → ListByType(erc20_transfer) → 支持 address/limit/offset
 ```
 
 ### 包结构
@@ -81,7 +90,7 @@ go-ether/
 ├── api/                     # HTTP API 层
 │   ├── handlers.go          # 基础处理器（区块、交易、事件）
 │   ├── handlers_tx.go       # ETH 交易发送处理器
-│   ├── handlers_contract.go # 合约 & ERC20 处理器
+│   ├── handlers_contract.go # 合约 & ERC20 处理器（含地址管理）
 │   └── http_server.go       # HTTP 服务器配置与路由注册
 ├── client/                  # Ethereum 客户端封装
 │   └── eth_client.go        # 基础客户端
@@ -97,11 +106,13 @@ go-ether/
 │   ├── block_service.go     # 区块查询服务
 │   ├── tx_service.go        # 交易查询服务
 │   ├── tx_send_service.go   # ETH 交易发送服务（写入 SQLite）
-│   ├── event_service.go     # ERC20 事件监听服务（写入 SQLite）
+│   ├── event_service.go     # ERC20 事件监听服务（含自动重连）
 │   ├── contract_service.go  # 通用合约调用服务（动态 selector 缓存）
-│   └── erc20_service.go     # ERC20 代币服务（基于 abigen 绑定，含部署）
+│   ├── erc20_service.go     # ERC20 代币服务（基于 abigen 绑定，含部署）
+│   └── contract_manager.go  # 合约管理器（地址管理、服务切换）
 ├── store/                   # 数据存储层（SQLite 统一存储）
-│   └── tx_history_store.go  # 交易/事件存储，支持按 tx_type 查询
+│   ├── tx_history_store.go  # 交易/事件存储，支持按 tx_type 查询
+│   └── contract_store.go    # 合约地址存储
 ├── tests/                   # 单元测试（统一测试目录）
 ├── wallet/                  # 钱包管理
 │   └── signer.go            # 环境变量私钥签名器
@@ -135,12 +146,15 @@ go-ether/
 
 | 方法 | 路径 | 描述 | 参数 |
 |------|------|------|------|
-| GET | `/api/events` | 查询 ERC20 Transfer 事件 | -（返回最近 100 条 `erc20_transfer`） |
+| GET | `/api/events` | 查询 ERC20 Transfer 事件 | `address`: 按地址过滤（可选），`limit`: 每页数量（默认 20），`offset`: 偏移量（默认 0） |
 
 ### 合约相关
 
 | 方法 | 路径 | 描述 | 参数 |
 |------|------|------|------|
+| GET | `/api/contract/list` | 查询所有合约地址 | - |
+| GET | `/api/contract/current` | 查询当前活跃合约 | - |
+| POST | `/api/contract/switch` | 切换当前合约地址 | `{"address"}` |
 | POST | `/api/contract/view` | 调用视图方法（只读） | `{"contractAddr", "method", "args"}` |
 | POST | `/api/contract/call` | 发送合约交易（写） | `{"contractAddr", "method", "args"}` |
 
@@ -148,11 +162,11 @@ go-ether/
 
 | 方法 | 路径 | 描述 | 参数 |
 |------|------|------|------|
-| GET | `/api/token/info` | 查询代币信息 | 无（使用 `.env` 配置的合约地址） |
+| GET | `/api/token/info` | 查询代币信息 | 无（使用当前活跃合约） |
 | GET | `/api/token/balance` | 查询余额 | `holder` |
 | POST | `/api/token/transfer` | 代币转账 | `{"to", "amount"}` |
 | POST | `/api/token/mint` | 铸造代币 | `{"to", "amount"}` |
-| POST | `/api/token/deploy` | 部署 MyERC20 合约 | `{"name", "symbol", "initialSupply", "recipient"}` |
+| POST | `/api/token/deploy` | 部署 MyERC20 合约（部署后自动设为活跃合约） | `{"name", "symbol", "initialSupply", "recipient"}` |
 
 ### 数据字段说明
 
@@ -209,7 +223,8 @@ NETWORK=sepolia
 ETH_RPC_URL=https://sepolia.infura.io/v3/YOUR_INFURA_KEY
 ETH_WS_URL=wss://sepolia.infura.io/ws/v3/YOUR_INFURA_KEY
 
-# ERC-20 合约地址（已部署的 MyERC20 合约）
+# ERC-20 合约地址（默认地址，仅在无保存地址时使用）
+# 合约地址优先从 contracts.db 读取
 ERC20_CONTRACT=0xYourContractAddress
 
 # 发送者私钥（用于签名交易，不要提交到版本控制）
@@ -257,7 +272,31 @@ curl "http://localhost:8080/api/tx/history?page=1&pageSize=20"
 ### 查询 Transfer 事件
 
 ```bash
-curl http://localhost:8080/api/events
+# 分页查询
+curl "http://localhost:8080/api/events?limit=20&offset=0"
+
+# 按地址过滤
+curl "http://localhost:8080/api/events?address=0x1234...&limit=20"
+```
+
+### 查询合约地址列表
+
+```bash
+curl http://localhost:8080/api/contract/list
+```
+
+### 查询当前活跃合约
+
+```bash
+curl http://localhost:8080/api/contract/current
+```
+
+### 切换合约地址
+
+```bash
+curl -X POST http://localhost:8080/api/contract/switch \
+  -H "Content-Type: application/json" \
+  -d '{"address": "0xNewContractAddress"}'
 ```
 
 ### 查询代币信息
@@ -405,9 +444,22 @@ A: 请检查：
 ### Q: ERC-20 事件没有收到？
 
 A: 请检查：
-1. `ERC20_CONTRACT` 是否设置正确
+1. 当前活跃合约地址是否正确（`GET /api/contract/current`）
 2. 合约是否有 Transfer 事件
-3. WebSocket 连接是否正常
+3. WebSocket 连接是否正常（会自动重连）
+
+### Q: 如何切换合约地址？
+
+A: 使用 `POST /api/contract/switch` 接口：
+```bash
+curl -X POST http://localhost:8080/api/contract/switch \
+  -H "Content-Type: application/json" \
+  -d '{"address": "0xNewAddress"}'
+```
+
+### Q: 合约地址存储在哪里？
+
+A: 合约地址持久化在 `contracts.db` SQLite 数据库中，启动时优先读取活跃地址。
 
 ### Q: abigen 命令未找到？
 

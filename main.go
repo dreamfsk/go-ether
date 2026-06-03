@@ -35,15 +35,11 @@ func main() {
 		log.Fatal("❌ ETH_WS_URL or ETH_RPC_URL must be set")
 	}
 
-	if cfg.ERC20Contract == "" {
-		log.Fatal("❌ ERC20_CONTRACT must be set")
-	}
-
 	log.Printf("✅ 配置加载完成")
 	log.Printf("   - 当前网络: %s", cfg.Network)
 	log.Printf("   - 节点 URL: %s", nodeURL)
 	log.Printf("   - ChainID: %s", cfg.NetworkConfig.ChainID.String())
-	log.Printf("   - ERC20 合约: %s", cfg.ERC20Contract)
+	log.Printf("   - 默认合约: %s", cfg.ERC20Contract)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -56,13 +52,20 @@ func main() {
 	log.Println("✅ 以太坊节点连接成功")
 	defer ethClient.Close()
 
-	log.Println("📦 初始化 SQLite 交易历史存储...")
+	log.Println("📦 初始化 SQLite 存储...")
 	txHistoryStore, err := store.NewTxHistoryStore("transactions.db")
 	if err != nil {
 		log.Fatalf("❌ SQLite 初始化失败: %v", err)
 	}
 	log.Println("✅ SQLite 交易历史存储初始化完成")
 	defer txHistoryStore.Close()
+
+	contractStore, err := store.NewContractStore("contracts.db")
+	if err != nil {
+		log.Fatalf("❌ 合约存储初始化失败: %v", err)
+	}
+	log.Println("✅ SQLite 合约存储初始化完成")
+	defer contractStore.Close()
 
 	var signer wallet.Signer
 	log.Println("🔐 初始化钱包...")
@@ -73,15 +76,20 @@ func main() {
 		signer = nil
 	} else {
 		signer = envSigner
-		log.Printf("✅ 钱包初始化成功，地址: %s", signer.Address().Hex())
+		log.Printf("✅ 钱包初始化成功")
 	}
 
 	log.Println("🔧 初始化服务组件...")
 	blockService := service.NewBlockService(ethClient)
 	txService := service.NewTxService(ethClient)
-	eventService, err := service.NewEventService(ethClient, txHistoryStore, cfg.Network, cfg.ERC20Contract)
-	if err != nil {
-		log.Fatalf("❌ 事件服务初始化失败: %v", err)
+
+	contractManager := service.NewContractManager(
+		ethClient, signer, contractStore, txHistoryStore,
+		string(cfg.Network), cfg.NetworkConfig.ChainID,
+	)
+
+	if err := contractManager.Initialize(cfg.ERC20Contract); err != nil {
+		log.Fatalf("❌ 合约管理器初始化失败: %v", err)
 	}
 
 	var txSendService *service.TxSendService
@@ -90,21 +98,10 @@ func main() {
 		log.Println("✅ 交易发送服务初始化完成")
 	}
 
-	log.Println("🔧 初始化合约服务...")
 	var contractService *service.ContractService
 	if signer != nil {
 		contractService = service.NewContractService(ethClient, signer, cfg.Network, cfg.NetworkConfig.ChainID)
 		log.Println("✅ 合约服务初始化完成")
-	}
-
-	log.Println("🔧 初始化 ERC20 服务...")
-	var erc20Service *service.ERC20Service
-	if signer != nil {
-		erc20Service, err = service.NewERC20Service(ethClient, signer, cfg.Network, cfg.NetworkConfig.ChainID, cfg.ERC20Contract)
-		if err != nil {
-			log.Fatalf("❌ ERC20 服务初始化失败: %v", err)
-		}
-		log.Println("✅ ERC20 服务初始化完成")
 	}
 
 	log.Println("✅ 服务组件初始化完成")
@@ -114,13 +111,18 @@ func main() {
 		log.Println("🔐 签名钱包已配置，全功能模式运行")
 	}
 
-	log.Println("👂 启动 ERC20 Transfer 事件监听...")
-	go eventService.StartListening(ctx)
+	currentContract := contractManager.GetCurrentContract()
+	if currentContract != nil {
+		log.Printf("📋 当前合约地址: %s", currentContract.Address)
+		contractManager.StartListening()
+	} else {
+		log.Println("⚠️  未配置合约地址，事件监听未启动")
+	}
 
 	log.Println("🌐 启动 HTTP API 服务器 (端口: 8080)...")
 	handlers := api.NewHandlers(blockService, txService, txHistoryStore)
 	txHandlers := api.NewTxHandlers(txSendService, txHistoryStore)
-	contractHandlers := api.NewContractHandlers(contractService, erc20Service)
+	contractHandlers := api.NewContractHandlers(contractService, contractManager)
 	server := api.NewServer(handlers, txHandlers, contractHandlers, ":8080")
 
 	go func() {
@@ -148,10 +150,12 @@ func main() {
 	log.Println("✅ HTTP 服务器已关闭")
 
 	log.Println("🔄 停止事件监听...")
+	contractManager.Stop()
 	cancel()
 
 	log.Println("🔄 关闭数据库...")
 	txHistoryStore.Close()
+	contractStore.Close()
 	log.Println("✅ 数据库已关闭")
 
 	log.Println("=============================================")
