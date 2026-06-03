@@ -5,6 +5,7 @@ import (
 	"log"
 	"math/big"
 	"net/http"
+	"os"
 	"strconv"
 
 	"github.com/meu/go-ether/service"
@@ -36,7 +37,7 @@ func (h *ContractHandlers) ContractList(w http.ResponseWriter, r *http.Request) 
 	contracts, err := h.contractManager.ListContracts()
 	if err != nil {
 		log.Printf("❌ [API] 查询合约列表失败: %v", err)
-		http.Error(w, "Failed to list contracts: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to list contracts", http.StatusInternalServerError)
 		return
 	}
 
@@ -82,7 +83,7 @@ func (h *ContractHandlers) ContractSwitch(w http.ResponseWriter, r *http.Request
 
 	if err := h.contractManager.SwitchContract(req.Address); err != nil {
 		log.Printf("❌ [API] 切换合约失败: %v", err)
-		http.Error(w, "Failed to switch contract: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to switch contract", http.StatusInternalServerError)
 		return
 	}
 
@@ -123,6 +124,22 @@ var erc20ViewMethods = map[string]bool{
 // erc20WriteMethods ERC20 写方法白名单
 var erc20WriteMethods = map[string]bool{
 	"transfer": true, "mint": true, "approve": true, "transferFrom": true,
+}
+
+// maxTokenAmount 代币/ETH 最大可操作数量，通过环境变量 MAX_TOKEN_AMOUNT 配置。
+// 默认 10^30，远超任何实际代币供应量，仅防止误操作极端值。
+func maxTokenAmount() *big.Int {
+	raw := os.Getenv("MAX_TOKEN_AMOUNT")
+	if raw == "" {
+		raw = "1000000000000000000000000000000" // 10^30
+	}
+	limit, ok := new(big.Int).SetString(raw, 10)
+	if !ok {
+		// 配置错误时使用默认，记录警告
+		log.Printf("⚠️  [API] MAX_TOKEN_AMOUNT 配置无效: %s，使用默认 10^30", raw)
+		limit = new(big.Int).Exp(big.NewInt(10), big.NewInt(30), nil)
+	}
+	return limit
 }
 
 func (h *ContractHandlers) ContractView(w http.ResponseWriter, r *http.Request) {
@@ -245,6 +262,9 @@ func (h *ContractHandlers) handleERC20Write(r *http.Request, req service.Contrac
 		if !ok {
 			return &service.ContractCallResponse{Status: "error", Result: "invalid amount"}
 		}
+		if amount.Cmp(maxTokenAmount()) > 0 {
+			return &service.ContractCallResponse{Status: "error", Result: "amount exceeds maximum allowed"}
+		}
 		txHash, err := erc20.Transfer(r.Context(), req.Args[0], amount)
 		if err != nil {
 			return &service.ContractCallResponse{Status: "error", Result: err.Error()}
@@ -257,6 +277,9 @@ func (h *ContractHandlers) handleERC20Write(r *http.Request, req service.Contrac
 		amount, ok := new(big.Int).SetString(req.Args[1], 10)
 		if !ok {
 			return &service.ContractCallResponse{Status: "error", Result: "invalid amount"}
+		}
+		if amount.Cmp(maxTokenAmount()) > 0 {
+			return &service.ContractCallResponse{Status: "error", Result: "amount exceeds maximum allowed"}
 		}
 		txHash, err := erc20.Mint(r.Context(), req.Args[0], amount)
 		if err != nil {
@@ -271,6 +294,9 @@ func (h *ContractHandlers) handleERC20Write(r *http.Request, req service.Contrac
 		if !ok {
 			return &service.ContractCallResponse{Status: "error", Result: "invalid amount"}
 		}
+		if amount.Cmp(maxTokenAmount()) > 0 {
+			return &service.ContractCallResponse{Status: "error", Result: "amount exceeds maximum allowed"}
+		}
 		txHash, err := erc20.Approve(r.Context(), req.Args[0], amount)
 		if err != nil {
 			return &service.ContractCallResponse{Status: "error", Result: err.Error()}
@@ -283,6 +309,9 @@ func (h *ContractHandlers) handleERC20Write(r *http.Request, req service.Contrac
 		amount, ok := new(big.Int).SetString(req.Args[2], 10)
 		if !ok {
 			return &service.ContractCallResponse{Status: "error", Result: "invalid amount"}
+		}
+		if amount.Cmp(maxTokenAmount()) > 0 {
+			return &service.ContractCallResponse{Status: "error", Result: "amount exceeds maximum allowed"}
 		}
 		txHash, err := erc20.TransferFrom(r.Context(), req.Args[0], req.Args[1], amount)
 		if err != nil {
@@ -304,7 +333,7 @@ func (h *ContractHandlers) TokenInfo(w http.ResponseWriter, r *http.Request) {
 		erc20, err = h.contractManager.GetERC20ServiceFor(contractAddr)
 		if err != nil {
 			log.Printf("❌ [API] 创建指定合约 ERC20Service 失败: %v", err)
-			http.Error(w, "Failed to create ERC20 service for address: "+err.Error(), http.StatusInternalServerError)
+			http.Error(w, "failed to create ERC20 service", http.StatusInternalServerError)
 			return
 		}
 	} else {
@@ -319,7 +348,7 @@ func (h *ContractHandlers) TokenInfo(w http.ResponseWriter, r *http.Request) {
 	info, err := erc20.GetTokenInfo(r.Context())
 	if err != nil {
 		log.Printf("❌ [API] 查询代币信息失败: %v", err)
-		http.Error(w, "Failed to get token info: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to get token info", http.StatusInternalServerError)
 		return
 	}
 
@@ -346,15 +375,30 @@ func (h *ContractHandlers) TokenBalance(w http.ResponseWriter, r *http.Request) 
 
 	log.Printf("📥 [API] GET /api/token/balance - holder: %s", holderAddr)
 
-	if h.getERC20Service() == nil {
+	contractAddr := r.URL.Query().Get("address")
+
+	var erc20 *service.ERC20Service
+	if contractAddr != "" && h.contractManager != nil {
+		var err error
+		erc20, err = h.contractManager.GetERC20ServiceFor(contractAddr)
+		if err != nil {
+			log.Printf("❌ [API] 创建指定合约 ERC20Service 失败: %v", err)
+			http.Error(w, "failed to create ERC20 service", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		erc20 = h.getERC20Service()
+	}
+
+	if erc20 == nil {
 		http.Error(w, "ERC20 service not available", http.StatusServiceUnavailable)
 		return
 	}
 
-	balance, err := h.getERC20Service().BalanceOf(r.Context(), holderAddr)
+	balance, err := erc20.BalanceOf(r.Context(), holderAddr)
 	if err != nil {
 		log.Printf("❌ [API] 查询代币余额失败: %v", err)
-		http.Error(w, "Failed to get balance: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to get balance", http.StatusInternalServerError)
 		return
 	}
 
@@ -363,7 +407,7 @@ func (h *ContractHandlers) TokenBalance(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"holder":        holderAddr,
 		"balance":       balance.String(),
-		"contractAddr":  h.getERC20Service().ContractAddress().Hex(),
+		"contractAddr":  erc20.ContractAddress().Hex(),
 	})
 }
 
@@ -396,11 +440,15 @@ func (h *ContractHandlers) TokenTransfer(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "invalid amount format", http.StatusBadRequest)
 		return
 	}
+	if amount.Cmp(maxTokenAmount()) > 0 {
+		http.Error(w, "amount exceeds maximum allowed", http.StatusBadRequest)
+		return
+	}
 
 	txHash, err := h.getERC20Service().Transfer(r.Context(), req.To, amount)
 	if err != nil {
 		log.Printf("❌ [API] 代币转账失败: %v", err)
-		http.Error(w, "Failed to transfer: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to transfer", http.StatusInternalServerError)
 		return
 	}
 
@@ -443,11 +491,15 @@ func (h *ContractHandlers) TokenMint(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid amount format", http.StatusBadRequest)
 		return
 	}
+	if amount.Cmp(maxTokenAmount()) > 0 {
+		http.Error(w, "amount exceeds maximum allowed", http.StatusBadRequest)
+		return
+	}
 
 	txHash, err := h.getERC20Service().Mint(r.Context(), req.To, amount)
 	if err != nil {
 		log.Printf("❌ [API] 代币铸造失败: %v", err)
-		http.Error(w, "Failed to mint: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to mint", http.StatusInternalServerError)
 		return
 	}
 
@@ -497,11 +549,15 @@ func (h *ContractHandlers) TokenDeploy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid initialSupply format", http.StatusBadRequest)
 		return
 	}
+	if initialSupply.Cmp(maxTokenAmount()) > 0 {
+		http.Error(w, "initialSupply exceeds maximum allowed", http.StatusBadRequest)
+		return
+	}
 
 	result, err := h.getERC20Service().Deploy(r.Context(), req.Name, req.Symbol, initialSupply, req.Recipient)
 	if err != nil {
 		log.Printf("❌ [API] 合约部署失败: %v", err)
-		http.Error(w, "Failed to deploy: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to deploy", http.StatusInternalServerError)
 		return
 	}
 

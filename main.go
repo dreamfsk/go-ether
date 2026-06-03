@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -164,6 +165,14 @@ func createStaticHandler() http.Handler {
 		return nil
 	}
 
+	// 获取绝对路径用于路径穿越校验
+	absDistPath, err := filepath.Abs(distPath)
+	if err != nil {
+		log.Printf("⚠️  无法获取静态文件目录绝对路径: %v", err)
+		return nil
+	}
+	absDistPath = filepath.Clean(absDistPath) + string(filepath.Separator)
+
 	fs := http.FileServer(http.Dir(distPath))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -173,9 +182,20 @@ func createStaticHandler() http.Handler {
 			r.URL.Path = "/index.html"
 		}
 
+		// 路径穿越防护：清理后验证仍在 dist 目录内
+		cleanedPath := filepath.Clean(r.URL.Path)
+		fullPath := filepath.Join(absDistPath, cleanedPath)
+		if !strings.HasPrefix(fullPath, absDistPath) {
+			log.Printf("⚠️  [Static] 拒绝路径穿越访问: %s", r.URL.Path)
+			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+			return
+		}
+
 		// SPA fallback: 文件不存在时返回 index.html
-		if _, err := os.Stat(distPath + r.URL.Path); os.IsNotExist(err) {
+		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 			r.URL.Path = "/index.html"
+		} else {
+			r.URL.Path = "/" + cleanedPath
 		}
 
 		fs.ServeHTTP(w, r)

@@ -3,7 +3,9 @@ package api
 import (
 	"log"
 	"net/http"
+	"os"
 	"runtime/debug"
+	"strings"
 	"time"
 )
 
@@ -22,10 +24,42 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
-// corsMiddleware 添加 CORS 头，允许前端跨域访问
+// corsAllowedOrigins 允许跨域访问的前端域名白名单，逗号分隔。
+// 可通过环境变量 CORS_ALLOWED_ORIGINS 配置，默认可本地开发地址。
+func corsAllowedOrigins() []string {
+	raw := os.Getenv("CORS_ALLOWED_ORIGINS")
+	if raw == "" {
+		raw = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080,http://localhost:3000"
+	}
+	return strings.Split(raw, ",")
+}
+
+// corsMiddleware 添加 CORS 头，仅反射允许的 Origin，不使用通配符。
 func corsMiddleware(next http.Handler) http.Handler {
+	allowed := corsAllowedOrigins()
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			// 同源请求，不设置 CORS 头也合法
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		originAllowed := false
+		for _, o := range allowed {
+			if strings.EqualFold(strings.TrimSpace(o), origin) {
+				originAllowed = true
+				break
+			}
+		}
+
+		if !originAllowed {
+			http.Error(w, `{"error":"origin not allowed"}`, http.StatusForbidden)
+			return
+		}
+
+		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 

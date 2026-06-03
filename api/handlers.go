@@ -40,7 +40,7 @@ func (h *Handlers) GetBlock(w http.ResponseWriter, r *http.Request) {
 	block, err := h.blockService.GetBlockByID(r.Context(), id)
 	if err != nil {
 		log.Printf("❌ [API] GET /api/block/%s: 错误 - %v", id, err)
-		http.Error(w, "failed to get block: "+err.Error(), http.StatusNotFound)
+		http.Error(w, "block not found", http.StatusNotFound)
 		return
 	}
 
@@ -63,7 +63,7 @@ func (h *Handlers) GetTransaction(w http.ResponseWriter, r *http.Request) {
 	tx, err := h.txService.GetTransactionByHash(r.Context(), hash)
 	if err != nil {
 		log.Printf("❌ [API] GET /api/tx/%s: 错误 - %v", hash, err)
-		http.Error(w, "failed to get transaction: "+err.Error(), http.StatusNotFound)
+		http.Error(w, "transaction not found", http.StatusNotFound)
 		return
 	}
 
@@ -106,12 +106,12 @@ func (h *Handlers) GetEvents(w http.ResponseWriter, r *http.Request) {
 	
 	if errList != nil {
 		log.Printf("❌ [API] GET /api/events: 查询事件失败 - %v", errList)
-		http.Error(w, "failed to get events: "+errList.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to get events", http.StatusInternalServerError)
 		return
 	}
 	if errCount != nil {
 		log.Printf("❌ [API] GET /api/events: 统计事件数失败 - %v", errCount)
-		http.Error(w, "failed to count events: "+errCount.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to count events", http.StatusInternalServerError)
 		return
 	}
 	

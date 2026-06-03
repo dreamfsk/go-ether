@@ -49,7 +49,7 @@ func (h *TxHandlers) SendTransaction(w http.ResponseWriter, r *http.Request) {
 	resp, err := txSendService.SendTransaction(r.Context(), req)
 	if err != nil {
 		log.Printf("❌ [API] 发送交易失败: %v", err)
-		http.Error(w, "Failed to send transaction: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to send transaction", http.StatusInternalServerError)
 		return
 	}
 
@@ -88,7 +88,7 @@ func (h *TxHandlers) GetTxHistory(w http.ResponseWriter, r *http.Request) {
 	entries, err := h.manager.GetTxHistory().List(limit, offset)
 	if err != nil {
 		log.Printf("❌ [API] 查询交易历史失败: %v", err)
-		http.Error(w, "Failed to get transaction history: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to get transaction history", http.StatusInternalServerError)
 		return
 	}
 
@@ -111,7 +111,7 @@ func (h *TxHandlers) GetTxByHash(w http.ResponseWriter, r *http.Request) {
 	entry, err := h.manager.GetTxHistory().GetByHash(txHash)
 	if err != nil {
 		log.Printf("❌ [API] 查询交易详情失败: %v", err)
-		http.Error(w, "Failed to get transaction: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to get transaction", http.StatusInternalServerError)
 		return
 	}
 

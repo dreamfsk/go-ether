@@ -27,7 +27,7 @@
 - **优雅关闭**：支持 SIGINT/SIGTERM 信号处理
 - **实时监控**：WebSocket 订阅 ERC-20 事件，断线自动重连（指数退避）
 - **RPC/WS 双通道**：HTTP RPC 用于合约调用/交易查询，WebSocket 专用事件订阅，WS 不可用时优雅降级
-- **服务生命周期统一管理**：`ContractManager` 作为总控入口，所有 signer 相关 service 统一创建/销毁
+- **服务生命周期统一管理**：`ContractManager` 管理合约注册与切换，`ContractServiceBundle` 统一管理 `EventService`/`ERC20Service`/`TxSendService` 的生命周期
 
 ## 架构设计
 
@@ -52,10 +52,10 @@
 │  ┌─────┐ ┌────┐                        ┌──────────────────┐    │
 │  │Block│ │ Tx │                        │ ContractManager  │    │
 │  │Svc  │ │ Svc│                        │  ┌─────────────┐ │    │
-│  └──┬──┘ └──┬─┘                        │  │TxSendService│ │    │
-│     │       │                          │  │ERC20Service │ │    │
-│     │       │                          │  │EventService │ │    │
-│     │       │                          │  │ContractSvc  │ │    │
+│  └──┬──┘ └──┬─┘                        │  │ServiceBundle │ │    │
+│     │       │                          │  │TxSendService │ │    │
+│     │       │                          │  │ERC20Service  │ │    │
+│     │       │                          │  │EventService  │ │    │
 │     │       │                          │  └─────────────┘ │    │
 │     │       │                          └────────┬─────────┘    │
 │     │       │                                   │              │
@@ -67,7 +67,7 @@
 │                       └─────────────┘                          │
 └─────────────────────────────────────────────────────────────────┘
 ```
-**说明**: `ContractManager` 作为唯一的 signer 相关服务入口，统一管理 `TxSendService`、`ERC20Service`、`EventService`、`ContractService` 的生命周期。`/api/contract/view` 和 `/api/contract/call` 中的 ERC20 方法通过方法白名单自动委托到 `ERC20Service`（类型安全绑定），非 ERC20 方法预留扩展点。
+**说明**: `ContractManager` 负责合约注册与切换，`ContractServiceBundle` 统一管理 `TxSendService`、`ERC20Service`、`EventService` 的生命周期。`/api/contract/view` 和 `/api/contract/call` 中的 ERC20 方法通过方法白名单自动委托到 `ERC20Service`（类型安全绑定），非 ERC20 方法预留扩展点。
 
 ### 数据流
 
@@ -81,7 +81,7 @@ ERC20 事件: WebSocket 监听 → EventService → SQLite (tx_type=erc20_transf
 合约部署: POST /api/token/deploy → ERC20Service → ContractManager → SQLite (contracts 表)
                                                          └→ 自动设为活跃合约
 
-合约切换: POST /api/contract/switch → ContractManager → 重建 ERC20Service/EventService/TxSendService
+合约切换: POST /api/contract/switch → ContractManager → ServiceBundle.Init() → 重建 EventService/ERC20Service/TxSendService
 
 合约调用: POST /api/contract/view (或 call)
           └→ ERC20 方法? → handleERC20View/handleERC20Write → 动态创建 ERC20Service → 类型安全调用
@@ -102,7 +102,8 @@ go-ether/
 │   ├── handlers_contract.go # 合约 & ERC20 处理器（含地址管理）
 │   └── http_server.go       # HTTP 服务器配置与路由注册
 ├── client/                  # Ethereum 客户端封装
-│   └── eth_client.go        # 基础客户端
+│   ├── eth_client.go        # 基础客户端（HTTP/WebSocket 封装）
+│   └── multi_client.go      # 双通道客户端（RPC + WS 统一管理）
 ├── config/                  # 配置管理
 │   ├── config.go            # 主配置（.env 加载）
 │   └── network.go           # 网络参数配置
@@ -116,9 +117,10 @@ go-ether/
 │   ├── tx_service.go        # 交易查询服务
 │   ├── tx_send_service.go   # ETH 交易发送服务（含指数退避确认、写入 SQLite）
 │   ├── event_service.go     # ERC20 事件监听服务（含自动重连）
-│   ├── contract_service.go  # 通用合约调用骨架（selector 缓存，预留非 ERC20 扩展）
+│   ├── contract_service.go  # 通用合约调用骨架（selector 预计算缓存，预留非 ERC20 扩展）
+│   ├── contract_service_bundle.go # 服务生命周期管理（EventService/ERC20Service/TxSendService）
 │   ├── erc20_service.go     # ERC20 代币服务（abigen 绑定、Gas 估算、类型安全调用、部署）
-│   └── contract_manager.go  # 服务总控（统一管理 TxSend/ERC20/Event/Contract 生命周期）
+│   └── contract_manager.go  # 合约管理器（注册、切换、持久化，委托 ServiceBundle 管理服务）
 ├── store/                   # 数据存储层（SQLite 统一存储）
 │   ├── tx_history_store.go  # 交易/事件存储，支持按 tx_type 查询
 │   └── contract_store.go    # 合约地址存储
@@ -183,11 +185,11 @@ go-ether/
 
 | 方法 | 路径 | 描述 | 参数 |
 |------|------|------|------|
-| GET | `/api/token/info` | 查询代币信息 | 无（使用当前活跃合约） |
-| GET | `/api/token/balance` | 查询余额 | `holder` |
-| POST | `/api/token/transfer` | 代币转账 | `{"to", "amount"}` |
-| POST | `/api/token/mint` | 铸造代币 | `{"to", "amount"}` |
-| POST | `/api/token/deploy` | 部署 MyERC20 合约（部署后自动设为活跃合约） | `{"name", "symbol", "initialSupply", "recipient"}` |
+| GET | `/api/token/info` | 查询代币信息 | `address`: 合约地址（可选，默认当前活跃合约） |
+| GET | `/api/token/balance` | 查询余额 | `holder`（必填）, `address`: 合约地址（可选） |
+| POST | `/api/token/transfer` | 代币转账 | `{"to", "amount"}`，受限 `MAX_TOKEN_AMOUNT` |
+| POST | `/api/token/mint` | 铸造代币 | `{"to", "amount"}`，受限 `MAX_TOKEN_AMOUNT` |
+| POST | `/api/token/deploy` | 部署 MyERC20 合约（部署后自动设为活跃合约） | `{"name", "symbol", "initialSupply", "recipient"}`，受限 `MAX_TOKEN_AMOUNT` |
 
 ### 数据字段说明
 
@@ -256,6 +258,12 @@ ERC20_CONTRACT=0xYourContractAddress
 
 # 发送者私钥（用于签名交易，不要提交到版本控制）
 SENDER_PRIVATE_KEY=your_private_key_here
+
+# CORS 允许的前端域名白名单（逗号分隔，不设置时默认允许常用本地开发地址）
+# CORS_ALLOWED_ORIGINS=https://your-domain.com
+
+# 代币/ETH 操作金额上限（wei 单位，默认 10^30）
+# MAX_TOKEN_AMOUNT=1000000000000000000000000000000
 ```
 
 ### 启动服务
@@ -329,13 +337,21 @@ curl -X POST http://localhost:8080/api/contract/switch \
 ### 查询代币信息
 
 ```bash
+# 查询当前活跃合约信息
 curl http://localhost:8080/api/token/info
+
+# 按指定地址查询
+curl "http://localhost:8080/api/token/info?address=0xContractAddress"
 ```
 
 ### 查询代币余额
 
 ```bash
+# 查询当前活跃合约
 curl "http://localhost:8080/api/token/balance?holder=0xAddress"
+
+# 按指定合约地址查询
+curl "http://localhost:8080/api/token/balance?holder=0xAddress&address=0xContractAddress"
 ```
 
 ### 代币转账
@@ -533,13 +549,8 @@ http://localhost:8080/manage/index
 
 MIT License
 
-## 修复记录
+## 待扩展优化
+[] transactions.db 和 contracts.db 在 main.go 中硬编码，改为从环境变量或配置文件读取。
+[] 添加jwt认证
+[] 私钥保护
 
-详细问题分析及修复过程请参阅 [fix.md](./fix.md)。关键修复包括：
-
-- **chainID 安全传递**：修复 3 处硬编码/遗漏的 EIP-155 签名错误
-- **Gas 动态估算**：所有 ERC20 写操作增加 `eth_estimateGas` 估算
-- **错误处理增强**：nonce 溢出防护、rows.Err() 检查、nil CallOpts 替换、错误日志统一
-- **架构优化**：统一 ERC20 双路径到 ERC20Service、ContractManager 收拢服务生命周期、RPC/WS 双通道分离
-- **接口封装**：Signer 接口新增 `TransactOpts`，消除私钥暴露
-- **前端修复**：事件响应类型安全、合约详情页按地址查询 tokenInfo

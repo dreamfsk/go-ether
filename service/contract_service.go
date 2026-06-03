@@ -12,31 +12,42 @@ import (
 	"github.com/meu/go-ether/wallet"
 )
 
+// 预计算的 ERC20 方法 selector，由 sync.Once 保证线程安全的一次性初始化。
 var (
-	selectorCache   = make(map[string][]byte)
-	selectorCacheMu sync.RWMutex
+	selectorTransfer     []byte
+	selectorMint         []byte
+	selectorApprove      []byte
+	selectorTransferFrom []byte
+	selectorOnce         sync.Once
 )
 
+func initSelectors() {
+	hash := crypto.Keccak256Hash([]byte("transfer(address,uint256)"))
+	selectorTransfer = hash[:4]
+	hash = crypto.Keccak256Hash([]byte("mint(address,uint256)"))
+	selectorMint = hash[:4]
+	hash = crypto.Keccak256Hash([]byte("approve(address,uint256)"))
+	selectorApprove = hash[:4]
+	hash = crypto.Keccak256Hash([]byte("transferFrom(address,address,uint256)"))
+	selectorTransferFrom = hash[:4]
+}
+
+// getMethodSelector 根据方法签名返回 4 字节 selector（仅支持已注册的 ERC20 方法，未知签名则动态计算）
 func getMethodSelector(methodSig string) ([]byte, error) {
-	selectorCacheMu.RLock()
-	if selector, ok := selectorCache[methodSig]; ok {
-		selectorCacheMu.RUnlock()
-		return selector, nil
+	selectorOnce.Do(initSelectors)
+	switch methodSig {
+	case "transfer(address,uint256)":
+		return selectorTransfer, nil
+	case "mint(address,uint256)":
+		return selectorMint, nil
+	case "approve(address,uint256)":
+		return selectorApprove, nil
+	case "transferFrom(address,address,uint256)":
+		return selectorTransferFrom, nil
+	default:
+		hash := crypto.Keccak256Hash([]byte(methodSig))
+		return hash[:4], nil
 	}
-	selectorCacheMu.RUnlock()
-
-	selectorCacheMu.Lock()
-	defer selectorCacheMu.Unlock()
-
-	if selector, ok := selectorCache[methodSig]; ok {
-		return selector, nil
-	}
-
-	hash := crypto.Keccak256Hash([]byte(methodSig))
-	selector := hash[:4]
-	selectorCache[methodSig] = selector
-
-	return selector, nil
 }
 
 type ContractService struct {

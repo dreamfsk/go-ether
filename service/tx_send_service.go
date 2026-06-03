@@ -21,16 +21,27 @@ type TxSendService struct {
 	network     config.NetworkType
 	chainID     *big.Int
 	txHistory   *store.TxHistoryStore
+
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 func NewTxSendService(c *client.EthClient, signer wallet.Signer, network config.NetworkType, chainID *big.Int, txHistory *store.TxHistoryStore) *TxSendService {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &TxSendService{
 		client:    c,
 		signer:    signer,
 		network:   network,
 		chainID:   chainID,
 		txHistory: txHistory,
+		ctx:       ctx,
+		cancel:    cancel,
 	}
+}
+
+// Stop 停止后台确认等待
+func (s *TxSendService) Stop() {
+	s.cancel()
 }
 
 type SendTxRequest struct {
@@ -153,7 +164,7 @@ func (s *TxSendService) SendTransaction(ctx context.Context, req SendTxRequest) 
 		}
 	}
 
-	go s.waitForTxConfirmation(ctx, txHash)
+	go s.waitForTxConfirmation(txHash)
 
 	return &SendTxResponse{
 		TxHash:   txHash,
@@ -173,12 +184,13 @@ const (
 	confirmMaxDelay    = 30   // 最大延迟（秒）
 )
 
-func (s *TxSendService) waitForTxConfirmation(ctx context.Context, txHash string) {
+func (s *TxSendService) waitForTxConfirmation(txHash string) {
 	log.Printf("⏳ [TxSendService] 等待交易确认: %s", txHash)
 
+	bgCtx := context.Background()
 	for attempt := 1; attempt <= maxConfirmAttempts; attempt++ {
 		select {
-		case <-ctx.Done():
+		case <-s.ctx.Done():
 			return
 		default:
 			delay := confirmBaseDelay * attempt
@@ -187,7 +199,7 @@ func (s *TxSendService) waitForTxConfirmation(ctx context.Context, txHash string
 			}
 			time.Sleep(time.Duration(delay) * time.Second)
 
-			receipt, err := s.client.TransactionReceipt(ctx, common.HexToHash(txHash))
+			receipt, err := s.client.TransactionReceipt(bgCtx, common.HexToHash(txHash))
 			if err != nil {
 				continue
 			}

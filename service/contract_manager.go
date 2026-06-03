@@ -1,7 +1,6 @@
 package service
 
 import (
-	"context"
 	"log"
 	"math/big"
 	"sync"
@@ -13,6 +12,7 @@ import (
 	"github.com/meu/go-ether/wallet"
 )
 
+// ContractManager 管理合约注册、切换、持久化，内部委托 ServiceBundle 管理服务生命周期。
 type ContractManager struct {
 	mu sync.RWMutex
 
@@ -20,16 +20,11 @@ type ContractManager struct {
 	signer        wallet.Signer
 	contractStore *store.ContractStore
 	txHistory     *store.TxHistoryStore
-	network       string
+	network       config.NetworkType
 	chainID       *big.Int
 
 	currentContract *store.ContractEntry
-	eventService    *EventService
-	erc20Service    *ERC20Service
-	txSendService   *TxSendService
-
-	ctx    context.Context
-	cancel context.CancelFunc
+	serviceBundle   *ContractServiceBundle
 }
 
 func NewContractManager(
@@ -40,17 +35,22 @@ func NewContractManager(
 	network string,
 	chainID *big.Int,
 ) *ContractManager {
+	networkType := config.NetworkType(network)
 	log.Println("🔧 [ContractManager] 初始化")
-	return &ContractManager{
+
+	cm := &ContractManager{
 		multiClient:   multiClient,
 		signer:        signer,
 		contractStore: contractStore,
 		txHistory:     txHistory,
-		network:       network,
+		network:       networkType,
 		chainID:       chainID,
 	}
+	cm.serviceBundle = NewContractServiceBundle(multiClient, signer, txHistory, networkType, chainID)
+	return cm
 }
 
+// Initialize 加载活跃合约并初始化关联服务
 func (m *ContractManager) Initialize(defaultAddress string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -67,46 +67,17 @@ func (m *ContractManager) Initialize(defaultAddress string) error {
 		log.Printf("📋 [ContractManager] 使用默认合约地址: %s", defaultAddress)
 		m.currentContract = &store.ContractEntry{
 			Address:  defaultAddress,
-			Network:  m.network,
+			Network:  string(m.network),
 			IsActive: true,
 		}
 	} else {
 		return nil
 	}
 
-	return m.initServices()
+	return m.serviceBundle.Init(m.currentContract.Address)
 }
 
-func (m *ContractManager) initServices() error {
-	if m.currentContract == nil {
-		return nil
-	}
-
-	if m.cancel != nil {
-		m.cancel()
-	}
-
-	m.ctx, m.cancel = context.WithCancel(context.Background())
-
-	var err error
-	m.eventService, err = NewEventService(m.multiClient.WS(), m.txHistory, config.NetworkType(m.network), m.currentContract.Address)
-	if err != nil {
-		return err
-	}
-
-	if m.signer != nil {
-		m.erc20Service, err = NewERC20Service(m.multiClient.RPC(), m.signer, config.NetworkType(m.network), m.chainID, m.currentContract.Address)
-		if err != nil {
-			return err
-		}
-
-		m.txSendService = NewTxSendService(m.multiClient.RPC(), m.signer, config.NetworkType(m.network), m.chainID, m.txHistory)
-	}
-
-	log.Printf("✅ [ContractManager] 服务初始化完成，合约: %s", m.currentContract.Address)
-	return nil
-}
-
+// SwitchContract 切换到指定合约地址
 func (m *ContractManager) SwitchContract(address string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -124,7 +95,7 @@ func (m *ContractManager) SwitchContract(address string) error {
 	if entry == nil {
 		entry = &store.ContractEntry{
 			Address:  address,
-			Network:  m.network,
+			Network:  string(m.network),
 			IsActive: true,
 		}
 		if err := m.contractStore.Add(*entry); err != nil {
@@ -139,60 +110,10 @@ func (m *ContractManager) SwitchContract(address string) error {
 	m.currentContract = entry
 	log.Printf("🔄 [ContractManager] 切换合约: %s", address)
 
-	return m.initServices()
+	return m.serviceBundle.Init(address)
 }
 
-func (m *ContractManager) GetCurrentContract() *store.ContractEntry {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.currentContract
-}
-
-func (m *ContractManager) GetEventService() *EventService {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.eventService
-}
-
-func (m *ContractManager) GetERC20Service() *ERC20Service {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.erc20Service
-}
-
-// GetTxSendService 返回 ETH 交易发送服务，无 signer 时返回 nil
-func (m *ContractManager) GetTxSendService() *TxSendService {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.txSendService
-}
-
-// GetTxHistory 返回交易历史存储
-func (m *ContractManager) GetTxHistory() *store.TxHistoryStore {
-	return m.txHistory
-}
-
-func (m *ContractManager) StartListening() {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	if m.eventService != nil && m.ctx != nil {
-		log.Println("👂 [ContractManager] 启动事件监听...")
-		go m.eventService.StartListening(m.ctx)
-	}
-}
-
-func (m *ContractManager) Stop() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.cancel != nil {
-		m.cancel()
-		m.cancel = nil
-	}
-	log.Println("🛑 [ContractManager] 已停止")
-}
-
+// AddDeployedContract 注册新部署的合约并切换为活跃合约
 func (m *ContractManager) AddDeployedContract(address, name, symbol, deployer, txHash string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -201,7 +122,7 @@ func (m *ContractManager) AddDeployedContract(address, name, symbol, deployer, t
 		Address:   address,
 		Name:      name,
 		Symbol:    symbol,
-		Network:   m.network,
+		Network:   string(m.network),
 		Deployer:  deployer,
 		TxHash:    txHash,
 		IsActive:  true,
@@ -219,21 +140,49 @@ func (m *ContractManager) AddDeployedContract(address, name, symbol, deployer, t
 	m.currentContract = &entry
 	log.Printf("✅ [ContractManager] 已添加部署的合约: %s", address)
 
-	return m.initServices()
+	return m.serviceBundle.Init(address)
+}
+
+// --- 查询方法 ---
+
+func (m *ContractManager) GetCurrentContract() *store.ContractEntry {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.currentContract
+}
+
+func (m *ContractManager) GetEventService() *EventService {
+	return m.serviceBundle.EventService()
+}
+
+func (m *ContractManager) GetERC20Service() *ERC20Service {
+	return m.serviceBundle.ERC20Service()
+}
+
+func (m *ContractManager) GetTxSendService() *TxSendService {
+	return m.serviceBundle.TxSendService()
+}
+
+func (m *ContractManager) GetTxHistory() *store.TxHistoryStore {
+	return m.txHistory
 }
 
 func (m *ContractManager) ListContracts() ([]store.ContractEntry, error) {
 	return m.contractStore.List()
 }
 
-// GetERC20ServiceFor 为指定地址创建临时 ERC20Service，用于按地址交互
+// GetERC20ServiceFor 为指定地址创建临时 ERC20Service
 func (m *ContractManager) GetERC20ServiceFor(address string) (*ERC20Service, error) {
-	m.mu.RLock()
-	rpcClient := m.multiClient.RPC()
-	signer := m.signer
-	network := m.network
-	chainID := m.chainID
-	m.mu.RUnlock()
+	return m.serviceBundle.CreateERC20ServiceFor(address)
+}
 
-	return NewERC20Service(rpcClient, signer, config.NetworkType(network), chainID, address)
+// --- 生命周期 ---
+
+func (m *ContractManager) StartListening() {
+	m.serviceBundle.StartListening()
+}
+
+func (m *ContractManager) Stop() {
+	m.serviceBundle.Stop()
+	log.Println("🛑 [ContractManager] 已停止")
 }
