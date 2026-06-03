@@ -7,6 +7,8 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -52,22 +54,24 @@ type TokenInfo struct {
 
 // GetTokenInfo 获取代币基本信息
 func (s *ERC20Service) GetTokenInfo(ctx context.Context) (*TokenInfo, error) {
-	name, err := s.contract.Name(nil)
+	callOpts := &bind.CallOpts{Context: ctx}
+
+	name, err := s.contract.Name(callOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get name: %w", err)
 	}
 
-	symbol, err := s.contract.Symbol(nil)
+	symbol, err := s.contract.Symbol(callOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get symbol: %w", err)
 	}
 
-	decimals, err := s.contract.Decimals(nil)
+	decimals, err := s.contract.Decimals(callOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get decimals: %w", err)
 	}
 
-	totalSupply, err := s.contract.TotalSupply(nil)
+	totalSupply, err := s.contract.TotalSupply(callOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get total supply: %w", err)
 	}
@@ -83,7 +87,7 @@ func (s *ERC20Service) GetTokenInfo(ctx context.Context) (*TokenInfo, error) {
 // BalanceOf 查询代币余额
 func (s *ERC20Service) BalanceOf(ctx context.Context, address string) (*big.Int, error) {
 	addr := common.HexToAddress(address)
-	balance, err := s.contract.BalanceOf(nil, addr)
+	balance, err := s.contract.BalanceOf(&bind.CallOpts{Context: ctx}, addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get balance: %w", err)
 	}
@@ -96,16 +100,27 @@ func (s *ERC20Service) Transfer(ctx context.Context, to string, amount *big.Int)
 		return "", fmt.Errorf("signer not initialized")
 	}
 
-	auth, err := bind.NewKeyedTransactorWithChainID(s.signer.(*wallet.EnvSigner).PrivateKey(), s.chainID)
+	auth, err := s.signer.TransactOpts(ctx, s.chainID)
 	if err != nil {
 		return "", fmt.Errorf("failed to create transactor: %w", err)
 	}
-	auth.Nonce = big.NewInt(int64(s.getNonce(ctx)))
+	nonce, err := s.getNonce(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get nonce: %w", err)
+	}
+	auth.Nonce = nonce
 	auth.Value = big.NewInt(0)
-	auth.GasLimit = 65000
-	auth.GasPrice = s.getGasPrice(ctx)
+	gasPrice, err := s.getGasPrice(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get gas price: %w", err)
+	}
+	auth.GasPrice = gasPrice
 
 	toAddr := common.HexToAddress(to)
+	fromAddr := s.signer.Address()
+
+	transferData := s.buildTransferData(toAddr, amount)
+	auth.GasLimit = s.estimateGas(ctx, fromAddr, transferData)
 
 	tx, err := s.contract.Transfer(auth, toAddr, amount)
 	if err != nil {
@@ -124,16 +139,25 @@ func (s *ERC20Service) Mint(ctx context.Context, to string, amount *big.Int) (st
 		return "", fmt.Errorf("signer not initialized")
 	}
 
-	auth, err := bind.NewKeyedTransactorWithChainID(s.signer.(*wallet.EnvSigner).PrivateKey(), s.chainID)
+	auth, err := s.signer.TransactOpts(ctx, s.chainID)
 	if err != nil {
 		return "", fmt.Errorf("failed to create transactor: %w", err)
 	}
-	auth.Nonce = big.NewInt(int64(s.getNonce(ctx)))
+	auth.Nonce, err = s.getNonce(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get nonce: %w", err)
+	}
 	auth.Value = big.NewInt(0)
-	auth.GasLimit = 100000
-	auth.GasPrice = s.getGasPrice(ctx)
+	auth.GasPrice, err = s.getGasPrice(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get gas price: %w", err)
+	}
 
 	toAddr := common.HexToAddress(to)
+	fromAddr := s.signer.Address()
+
+	mintData := s.buildMintData(toAddr, amount)
+	auth.GasLimit = s.estimateGas(ctx, fromAddr, mintData)
 
 	tx, err := s.contract.Mint(auth, toAddr, amount)
 	if err != nil {
@@ -153,12 +177,12 @@ type DeployResult struct {
 }
 
 // DeployERC20 部署 MyERC20 合约（包级函数）
-func DeployERC20(ctx context.Context, c *client.EthClient, signer wallet.Signer, name, symbol string, initialSupply *big.Int, recipient string) (*DeployResult, error) {
+func DeployERC20(ctx context.Context, c *client.EthClient, signer wallet.Signer, chainID *big.Int, name, symbol string, initialSupply *big.Int, recipient string) (*DeployResult, error) {
 	if signer == nil {
 		return nil, fmt.Errorf("signer not initialized")
 	}
 
-	auth, err := bind.NewKeyedTransactorWithChainID(signer.(*wallet.EnvSigner).PrivateKey(), big.NewInt(1))
+	auth, err := signer.TransactOpts(ctx, chainID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transactor: %w", err)
 	}
@@ -195,25 +219,88 @@ func DeployERC20(ctx context.Context, c *client.EthClient, signer wallet.Signer,
 
 // Deploy 部署 MyERC20 合约（实例方法）
 func (s *ERC20Service) Deploy(ctx context.Context, name, symbol string, initialSupply *big.Int, recipient string) (*DeployResult, error) {
-	return DeployERC20(ctx, s.client, s.signer, name, symbol, initialSupply, recipient)
+	return DeployERC20(ctx, s.client, s.signer, s.chainID, name, symbol, initialSupply, recipient)
 }
 
-// getNonce 获取待处理交易数
-func (s *ERC20Service) getNonce(ctx context.Context) uint64 {
+// estimateGas 估算交易 gas，失败时返回默认值（1.5x 硬编码值）
+func (s *ERC20Service) estimateGas(ctx context.Context, from common.Address, data []byte) uint64 {
+	callMsg := ethereum.CallMsg{
+		From: from,
+		To:   &s.contractAddr,
+		Data: data,
+	}
+	gas, err := s.client.EstimateGas(ctx, callMsg)
+	if err != nil {
+		log.Printf("⚠️  [ERC20Service] Gas 估算失败，使用默认值: %v", err)
+		return uint64(float64(defaultGasLimit(data)) * 1.5)
+	}
+	return uint64(float64(gas) * 1.2)
+}
+
+func defaultGasLimit(data []byte) uint64 {
+	switch {
+	case len(data) > 4 && string(data[:4]) == "mint":
+		return 100000
+	default:
+		return 65000
+	}
+}
+
+// buildTransferData 构建 transfer(address,uint256) 的 ABI 编码数据
+func (s *ERC20Service) buildTransferData(to common.Address, amount *big.Int) []byte {
+	selector := getCachedSelector("transfer(address,uint256)")
+	addressType, _ := abi.NewType("address", "", nil)
+	uint256Type, _ := abi.NewType("uint256", "", nil)
+	encoded, _ := abi.Arguments{{Type: addressType}, {Type: uint256Type}}.Pack(to, amount)
+	data := make([]byte, 0, len(selector)+len(encoded))
+	return append(append(data, selector...), encoded...)
+}
+
+// buildMintData 构建 mint(address,uint256) 的 ABI 编码数据
+func (s *ERC20Service) buildMintData(to common.Address, amount *big.Int) []byte {
+	selector := getCachedSelector("mint(address,uint256)")
+	addressType, _ := abi.NewType("address", "", nil)
+	uint256Type, _ := abi.NewType("uint256", "", nil)
+	encoded, _ := abi.Arguments{{Type: addressType}, {Type: uint256Type}}.Pack(to, amount)
+	data := make([]byte, 0, len(selector)+len(encoded))
+	return append(append(data, selector...), encoded...)
+}
+
+// buildApproveData 构建 approve(address,uint256) 的 ABI 编码数据
+func (s *ERC20Service) buildApproveData(spender common.Address, amount *big.Int) []byte {
+	selector := getCachedSelector("approve(address,uint256)")
+	addressType, _ := abi.NewType("address", "", nil)
+	uint256Type, _ := abi.NewType("uint256", "", nil)
+	encoded, _ := abi.Arguments{{Type: addressType}, {Type: uint256Type}}.Pack(spender, amount)
+	data := make([]byte, 0, len(selector)+len(encoded))
+	return append(append(data, selector...), encoded...)
+}
+
+// buildTransferFromData 构建 transferFrom(address,address,uint256) 的 ABI 编码数据
+func (s *ERC20Service) buildTransferFromData(from, to common.Address, amount *big.Int) []byte {
+	selector := getCachedSelector("transferFrom(address,address,uint256)")
+	addressType, _ := abi.NewType("address", "", nil)
+	uint256Type, _ := abi.NewType("uint256", "", nil)
+	encoded, _ := abi.Arguments{{Type: addressType}, {Type: addressType}, {Type: uint256Type}}.Pack(from, to, amount)
+	data := make([]byte, 0, len(selector)+len(encoded))
+	return append(append(data, selector...), encoded...)
+}
+
+func (s *ERC20Service) getNonce(ctx context.Context) (*big.Int, error) {
 	nonce, err := s.client.PendingNonceAt(ctx, s.signer.Address())
 	if err != nil {
-		return 0
+		return nil, fmt.Errorf("failed to get pending nonce: %w", err)
 	}
-	return nonce
+	return new(big.Int).SetUint64(nonce), nil
 }
 
 // getGasPrice 获取 Gas 价格
-func (s *ERC20Service) getGasPrice(ctx context.Context) *big.Int {
+func (s *ERC20Service) getGasPrice(ctx context.Context) (*big.Int, error) {
 	gasPrice, err := s.client.SuggestGasPrice(ctx)
 	if err != nil {
-		return big.NewInt(1_000_000_000)
+		return nil, fmt.Errorf("failed to suggest gas price: %w", err)
 	}
-	return gasPrice
+	return gasPrice, nil
 }
 
 // Allowance 查询授权额度
@@ -221,7 +308,7 @@ func (s *ERC20Service) Allowance(ctx context.Context, owner, spender string) (*b
 	ownerAddr := common.HexToAddress(owner)
 	spenderAddr := common.HexToAddress(spender)
 
-	allowance, err := s.contract.Allowance(nil, ownerAddr, spenderAddr)
+	allowance, err := s.contract.Allowance(&bind.CallOpts{Context: ctx}, ownerAddr, spenderAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get allowance: %w", err)
 	}
@@ -234,13 +321,25 @@ func (s *ERC20Service) Approve(ctx context.Context, spender string, amount *big.
 		return "", fmt.Errorf("signer not initialized")
 	}
 
-	auth := bind.NewKeyedTransactor(s.signer.(*wallet.EnvSigner).PrivateKey())
-	auth.Nonce = big.NewInt(int64(s.getNonce(ctx)))
+	auth, err := s.signer.TransactOpts(ctx, s.chainID)
+	if err != nil {
+		return "", fmt.Errorf("failed to create transactor: %w", err)
+	}
+	auth.Nonce, err = s.getNonce(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get nonce: %w", err)
+	}
 	auth.Value = big.NewInt(0)
-	auth.GasLimit = 65000
-	auth.GasPrice = s.getGasPrice(ctx)
+	auth.GasPrice, err = s.getGasPrice(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get gas price: %w", err)
+	}
 
 	spenderAddr := common.HexToAddress(spender)
+	fromAddr := s.signer.Address()
+
+	approveData := s.buildApproveData(spenderAddr, amount)
+	auth.GasLimit = s.estimateGas(ctx, fromAddr, approveData)
 
 	tx, err := s.contract.Approve(auth, spenderAddr, amount)
 	if err != nil {
@@ -259,14 +358,26 @@ func (s *ERC20Service) TransferFrom(ctx context.Context, from, to string, amount
 		return "", fmt.Errorf("signer not initialized")
 	}
 
-	auth := bind.NewKeyedTransactor(s.signer.(*wallet.EnvSigner).PrivateKey())
-	auth.Nonce = big.NewInt(int64(s.getNonce(ctx)))
+	auth, err := s.signer.TransactOpts(ctx, s.chainID)
+	if err != nil {
+		return "", fmt.Errorf("failed to create transactor: %w", err)
+	}
+	auth.Nonce, err = s.getNonce(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get nonce: %w", err)
+	}
 	auth.Value = big.NewInt(0)
-	auth.GasLimit = 65000
-	auth.GasPrice = s.getGasPrice(ctx)
+	auth.GasPrice, err = s.getGasPrice(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get gas price: %w", err)
+	}
 
 	fromAddr := common.HexToAddress(from)
 	toAddr := common.HexToAddress(to)
+	senderAddr := s.signer.Address()
+
+	transferFromData := s.buildTransferFromData(fromAddr, toAddr, amount)
+	auth.GasLimit = s.estimateGas(ctx, senderAddr, transferFromData)
 
 	tx, err := s.contract.TransferFrom(auth, fromAddr, toAddr, amount)
 	if err != nil {
@@ -292,7 +403,7 @@ func (s *ERC20Service) WaitForConfirmation(ctx context.Context, txHash string, c
 	}
 
 	if confirmations > 1 && receipt.Status == 1 {
-		currentBlock := receipt.BlockNumber
+		currentBlock := receipt.BlockNumber.Uint64()
 		for {
 			select {
 			case <-ctx.Done():
@@ -302,7 +413,7 @@ func (s *ERC20Service) WaitForConfirmation(ctx context.Context, txHash string, c
 				if err != nil {
 					return receipt, nil
 				}
-				if new(big.Int).Sub(header.Number, currentBlock).Uint64() >= confirmations {
+				if header.Number.Uint64()-currentBlock >= confirmations {
 					return receipt, nil
 				}
 				time.Sleep(5 * time.Second)

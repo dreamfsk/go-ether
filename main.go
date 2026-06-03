@@ -31,14 +31,15 @@ func main() {
 
 	cfg := config.Load()
 
-	nodeURL := cfg.GetNodeURL()
-	if nodeURL == "" {
-		log.Fatal("❌ ETH_WS_URL or ETH_RPC_URL must be set")
+	networkURL := cfg.GetRPCURL()
+	if networkURL == "" {
+		log.Fatal("❌ ETH_RPC_URL must be set")
 	}
 
 	log.Printf("✅ 配置加载完成")
 	log.Printf("   - 当前网络: %s", cfg.Network)
-	log.Printf("   - 节点 URL: %s", nodeURL)
+	log.Printf("   - RPC URL: %s", cfg.GetRPCURL())
+	log.Printf("   - WS URL: %s", cfg.GetWSURL())
 	log.Printf("   - ChainID: %s", cfg.NetworkConfig.ChainID.String())
 	log.Printf("   - 默认合约: %s", cfg.ERC20Contract)
 
@@ -46,12 +47,12 @@ func main() {
 	defer cancel()
 
 	log.Println("🔗 正在连接以太坊节点...")
-	ethClient, err := client.New(ctx, nodeURL)
+	multiClient, err := client.NewMultiClient(ctx, cfg)
 	if err != nil {
 		log.Fatalf("❌ 连接失败: %v", err)
 	}
 	log.Println("✅ 以太坊节点连接成功")
-	defer ethClient.Close()
+	defer multiClient.Close()
 
 	log.Println("📦 初始化 SQLite 存储...")
 	txHistoryStore, err := store.NewTxHistoryStore("transactions.db")
@@ -81,28 +82,16 @@ func main() {
 	}
 
 	log.Println("🔧 初始化服务组件...")
-	blockService := service.NewBlockService(ethClient)
-	txService := service.NewTxService(ethClient)
+	blockService := service.NewBlockService(multiClient.RPC())
+	txService := service.NewTxService(multiClient.RPC())
 
 	contractManager := service.NewContractManager(
-		ethClient, signer, contractStore, txHistoryStore,
+		multiClient, signer, contractStore, txHistoryStore,
 		string(cfg.Network), cfg.NetworkConfig.ChainID,
 	)
 
 	if err := contractManager.Initialize(cfg.ERC20Contract); err != nil {
 		log.Fatalf("❌ 合约管理器初始化失败: %v", err)
-	}
-
-	var txSendService *service.TxSendService
-	if signer != nil {
-		txSendService = service.NewTxSendService(ethClient, signer, cfg.Network, cfg.NetworkConfig.ChainID, txHistoryStore)
-		log.Println("✅ 交易发送服务初始化完成")
-	}
-
-	var contractService *service.ContractService
-	if signer != nil {
-		contractService = service.NewContractService(ethClient, signer, cfg.Network, cfg.NetworkConfig.ChainID)
-		log.Println("✅ 合约服务初始化完成")
 	}
 
 	log.Println("✅ 服务组件初始化完成")
@@ -122,8 +111,8 @@ func main() {
 
 	log.Println("🌐 启动 HTTP API 服务器 (端口: 8080)...")
 	handlers := api.NewHandlers(blockService, txService, txHistoryStore)
-	txHandlers := api.NewTxHandlers(txSendService, txHistoryStore)
-	contractHandlers := api.NewContractHandlers(contractService, contractManager)
+	txHandlers := api.NewTxHandlers(contractManager)
+	contractHandlers := api.NewContractHandlers(contractManager)
 
 	// 前端静态文件服务
 	staticHandler := createStaticHandler()

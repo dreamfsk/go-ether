@@ -34,9 +34,9 @@ export const switchContract = (data: SwitchContractRequest) =>
 
 // ============ 代币相关 API ============
 
-/** 获取代币信息 */
-export const getTokenInfo = () =>
-  api.get<TokenInfo>('/token/info')
+/** 获取代币信息（可指定合约地址，不传则查当前活跃合约） */
+export const getTokenInfo = (contractAddr?: string) =>
+  api.get<TokenInfo>('/token/info', { params: contractAddr ? { address: contractAddr } : undefined })
 
 /** 获取代币余额 */
 export const getTokenBalance = (holder: string) =>

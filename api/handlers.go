@@ -94,28 +94,33 @@ func (h *Handlers) GetEvents(w http.ResponseWriter, r *http.Request) {
 	
 	var events []store.TxHistoryEntry
 	var total int
-	var err error
+	var errList, errCount error
 	
 	if address != "" {
-		events, err = h.txHistoryStore.ListByTypeAndAddress("erc20_transfer", strings.ToLower(address), limit, offset)
-		total, err = h.txHistoryStore.CountByTypeAndAddress("erc20_transfer", strings.ToLower(address))
+		events, errList = h.txHistoryStore.ListByTypeAndAddress("erc20_transfer", strings.ToLower(address), limit, offset)
+		total, errCount = h.txHistoryStore.CountByTypeAndAddress("erc20_transfer", strings.ToLower(address))
 	} else {
-		events, err = h.txHistoryStore.ListByType("erc20_transfer", limit, offset)
-		total, err = h.txHistoryStore.CountByType("erc20_transfer")
+		events, errList = h.txHistoryStore.ListByType("erc20_transfer", limit, offset)
+		total, errCount = h.txHistoryStore.CountByType("erc20_transfer")
 	}
 	
-	if err != nil {
-		log.Printf("❌ [API] GET /api/events: 查询失败 - %v", err)
-		http.Error(w, "failed to get events: "+err.Error(), http.StatusInternalServerError)
+	if errList != nil {
+		log.Printf("❌ [API] GET /api/events: 查询事件失败 - %v", errList)
+		http.Error(w, "failed to get events: "+errList.Error(), http.StatusInternalServerError)
+		return
+	}
+	if errCount != nil {
+		log.Printf("❌ [API] GET /api/events: 统计事件数失败 - %v", errCount)
+		http.Error(w, "failed to count events: "+errCount.Error(), http.StatusInternalServerError)
 		return
 	}
 	
 	log.Printf("✅ [API] GET /api/events: 成功获取 %d/%d 条事件, 耗时 %v", len(events), total, time.Since(start))
 	
 	response := map[string]interface{}{
-		"data":  events,
-		"total": total,
-		"limit": limit,
+		"events": events,
+		"total":  total,
+		"limit":  limit,
 		"offset": offset,
 	}
 	

@@ -35,19 +35,19 @@ const ContractDetail = () => {
 
   const fetchTokenInfo = useCallback(async () => {
     try {
-      const res = await getTokenInfo()
+      const res = await getTokenInfo(address)
       setTokenInfo(res.data)
     } catch {
       // token info might not be available
     }
-  }, [])
+  }, [address])
 
   const fetchEvents = useCallback(async () => {
     if (!address) return
     setEventsLoading(true)
     try {
       const res = await getEvents({ address, limit: 50, offset: 0 })
-      setEvents(res.data.data || [])
+      setEvents(res.data.events || [])
     } catch {
       // events might not be available
     } finally {

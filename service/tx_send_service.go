@@ -167,15 +167,25 @@ func (s *TxSendService) SendTransaction(ctx context.Context, req SendTxRequest) 
 	}, nil
 }
 
+const (
+	maxConfirmAttempts = 120   // 最多轮询 120 次（约 10 分钟，5s 间隔）
+	confirmBaseDelay   = 5    // 基础延迟（秒）
+	confirmMaxDelay    = 30   // 最大延迟（秒）
+)
+
 func (s *TxSendService) waitForTxConfirmation(ctx context.Context, txHash string) {
 	log.Printf("⏳ [TxSendService] 等待交易确认: %s", txHash)
 
-	for {
+	for attempt := 1; attempt <= maxConfirmAttempts; attempt++ {
 		select {
 		case <-ctx.Done():
 			return
 		default:
-			time.Sleep(5 * time.Second)
+			delay := confirmBaseDelay * attempt
+			if delay > confirmMaxDelay {
+				delay = confirmMaxDelay
+			}
+			time.Sleep(time.Duration(delay) * time.Second)
 
 			receipt, err := s.client.TransactionReceipt(ctx, common.HexToHash(txHash))
 			if err != nil {
@@ -192,10 +202,11 @@ func (s *TxSendService) waitForTxConfirmation(ctx context.Context, txHash string
 					s.txHistory.UpdateStatus(txHash, status, receipt.BlockNumber.Uint64())
 				}
 
-				log.Printf("✅ [TxSendService] 交易已确认: %s, 状态: %d, 区块: %d",
-					txHash, receipt.Status, receipt.BlockNumber.Uint64())
+				log.Printf("✅ [TxSendService] 交易已确认: %s, 状态: %d, 区块: %d (尝试 %d/%d)",
+					txHash, receipt.Status, receipt.BlockNumber.Uint64(), attempt, maxConfirmAttempts)
 				return
 			}
 		}
 	}
+	log.Printf("⚠️  [TxSendService] 交易确认超时: %s (已等待约 %d 秒)", txHash, maxConfirmAttempts*confirmBaseDelay)
 }

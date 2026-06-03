@@ -75,7 +75,7 @@ export interface EventEntry {
 
 /** 分页事件响应 */
 export interface EventsResponse {
-  data: EventEntry[]
+  events: EventEntry[]
   total: number
   limit: number
   offset: number

@@ -20,11 +20,14 @@
 
 ### 架构特性
 - **分层架构**：Client → Service → API / Store
-- **多网络支持**：支持 Sepolia 测试网和本地测试链
-- **类型安全绑定**：使用 abigen 生成的 Go 合约绑定，无需手动编码 ABI
+- **多网络支持**：支持 Sepolia 测试网和本地测试链，EIP-155 签名适配（chainID 安全传递）
+- **类型安全绑定**：使用 abigen 生成的 Go 合约绑定，ERC20 交互统一走 ERC20Service
+- **Gas 动态估算**：所有 ERC20 写操作先调用 `eth_estimateGas`，失败时 1.5x 硬编码兜底
 - **统一持久化**：所有交易和事件数据统一存储到 SQLite，通过 `tx_type` 区分类型
 - **优雅关闭**：支持 SIGINT/SIGTERM 信号处理
-- **实时监控**：WebSocket 订阅 ERC-20 事件
+- **实时监控**：WebSocket 订阅 ERC-20 事件，断线自动重连（指数退避）
+- **RPC/WS 双通道**：HTTP RPC 用于合约调用/交易查询，WebSocket 专用事件订阅，WS 不可用时优雅降级
+- **服务生命周期统一管理**：`ContractManager` 作为总控入口，所有 signer 相关 service 统一创建/销毁
 
 ## 架构设计
 
@@ -46,24 +49,25 @@
         ▼          ▼             ▼                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                        Service Layer                           │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌───────────────┐   │
-│  │ BlockService    │  │ TxSendService   │  │ ContractService│   │
-│  │ TxService       │  │ ERC20Service    │  │ EventService  │   │
-│  │ ContractManager │  │                 │  │               │   │
-│  └────────┬────────┘  └────────┬────────┘  └───────┬───────┘   │
-└───────────┼────────────────────┼───────────────────┼───────────┘
-            │                    │                   │
-            └────────────────────┼───────────────────┘
-                                 ▼
-                    ┌────────────────────────┐
-                    │     SQLite 统一存储     │
-                    │  (tx_history 表)       │
-                    │  (contracts 表)        │
-                    │  tx_type 区分:         │
-                    │  - eth_transfer        │
-                    │  - erc20_transfer      │
-                    └────────────────────────┘
+│  ┌─────┐ ┌────┐                        ┌──────────────────┐    │
+│  │Block│ │ Tx │                        │ ContractManager  │    │
+│  │Svc  │ │ Svc│                        │  ┌─────────────┐ │    │
+│  └──┬──┘ └──┬─┘                        │  │TxSendService│ │    │
+│     │       │                          │  │ERC20Service │ │    │
+│     │       │                          │  │EventService │ │    │
+│     │       │                          │  │ContractSvc  │ │    │
+│     │       │                          │  └─────────────┘ │    │
+│     │       │                          └────────┬─────────┘    │
+│     │       │                                   │              │
+│     │       │         ┌─────────────┐           │              │
+│     │       └────────→│  SQLite     │←──────────┘              │
+│     └────────────────→│  统一存储   │                          │
+│                       │ tx_history │                          │
+│                       │ contracts  │                          │
+│                       └─────────────┘                          │
+└─────────────────────────────────────────────────────────────────┘
 ```
+**说明**: `ContractManager` 作为唯一的 signer 相关服务入口，统一管理 `TxSendService`、`ERC20Service`、`EventService`、`ContractService` 的生命周期。`/api/contract/view` 和 `/api/contract/call` 中的 ERC20 方法通过方法白名单自动委托到 `ERC20Service`（类型安全绑定），非 ERC20 方法预留扩展点。
 
 ### 数据流
 
@@ -77,7 +81,11 @@ ERC20 事件: WebSocket 监听 → EventService → SQLite (tx_type=erc20_transf
 合约部署: POST /api/token/deploy → ERC20Service → ContractManager → SQLite (contracts 表)
                                                          └→ 自动设为活跃合约
 
-合约切换: POST /api/contract/switch → ContractManager → 重启 EventService/ERC20Service
+合约切换: POST /api/contract/switch → ContractManager → 重建 ERC20Service/EventService/TxSendService
+
+合约调用: POST /api/contract/view (或 call)
+          └→ ERC20 方法? → handleERC20View/handleERC20Write → 动态创建 ERC20Service → 类型安全调用
+          └→ 非 ERC20 方法 → 返回错误（预留扩展点）
 
 API 查询:
   GET /api/tx/history → List(limit, offset)       → 全部类型
@@ -106,11 +114,11 @@ go-ether/
 ├── service/                 # 业务服务层
 │   ├── block_service.go     # 区块查询服务
 │   ├── tx_service.go        # 交易查询服务
-│   ├── tx_send_service.go   # ETH 交易发送服务（写入 SQLite）
+│   ├── tx_send_service.go   # ETH 交易发送服务（含指数退避确认、写入 SQLite）
 │   ├── event_service.go     # ERC20 事件监听服务（含自动重连）
-│   ├── contract_service.go  # 通用合约调用服务（动态 selector 缓存）
-│   ├── erc20_service.go     # ERC20 代币服务（基于 abigen 绑定，含部署）
-│   └── contract_manager.go  # 合约管理器（地址管理、服务切换）
+│   ├── contract_service.go  # 通用合约调用骨架（selector 缓存，预留非 ERC20 扩展）
+│   ├── erc20_service.go     # ERC20 代币服务（abigen 绑定、Gas 估算、类型安全调用、部署）
+│   └── contract_manager.go  # 服务总控（统一管理 TxSend/ERC20/Event/Contract 生命周期）
 ├── store/                   # 数据存储层（SQLite 统一存储）
 │   ├── tx_history_store.go  # 交易/事件存储，支持按 tx_type 查询
 │   └── contract_store.go    # 合约地址存储
@@ -166,8 +174,10 @@ go-ether/
 | GET | `/api/contract/list` | 查询所有合约地址 | - |
 | GET | `/api/contract/current` | 查询当前活跃合约 | - |
 | POST | `/api/contract/switch` | 切换当前合约地址 | `{"address"}` |
-| POST | `/api/contract/view` | 调用视图方法（只读） | `{"contractAddr", "method", "args"}` |
-| POST | `/api/contract/call` | 发送合约交易（写） | `{"contractAddr", "method", "args"}` |
+| POST | `/api/contract/view` | 调用视图方法（ERC20 方法自动委托到 ERC20Service） | `{"contractAddr", "method", "args"}` |
+| POST | `/api/contract/call` | 发送合约交易（ERC20 方法自动委托到 ERC20Service） | `{"contractAddr", "method", "args"}` |
+
+**支持的 ERC20 方法**: `name`, `symbol`, `decimals`, `totalSupply`, `balanceOf`(address), `allowance`(owner,spender), `transfer`(to,amount), `mint`(to,amount), `approve`(spender,amount), `transferFrom`(from,to,amount)
 
 ### 代币相关
 
@@ -522,3 +532,14 @@ http://localhost:8080/manage/index
 ## 许可证
 
 MIT License
+
+## 修复记录
+
+详细问题分析及修复过程请参阅 [fix.md](./fix.md)。关键修复包括：
+
+- **chainID 安全传递**：修复 3 处硬编码/遗漏的 EIP-155 签名错误
+- **Gas 动态估算**：所有 ERC20 写操作增加 `eth_estimateGas` 估算
+- **错误处理增强**：nonce 溢出防护、rows.Err() 检查、nil CallOpts 替换、错误日志统一
+- **架构优化**：统一 ERC20 双路径到 ERC20Service、ContractManager 收拢服务生命周期、RPC/WS 双通道分离
+- **接口封装**：Signer 接口新增 `TransactOpts`，消除私钥暴露
+- **前端修复**：事件响应类型安全、合约详情页按地址查询 tokenInfo

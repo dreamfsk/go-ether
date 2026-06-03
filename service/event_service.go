@@ -152,14 +152,22 @@ func (s *EventService) processLog(vLog types.Log) {
 		Value *big.Int
 	}
 
-	if err := s.abi.UnpackIntoInterface(&event, "Transfer", vLog.Data); err != nil {
-		log.Printf("❌ [EventService] 日志数据解析失败: %v", err)
-		return
-	}
-
+	// ERC20 Transfer 事件的 from/to 是 indexed 参数，位于 topics[1] 和 topics[2]
 	if len(vLog.Topics) >= 3 {
 		event.From = common.BytesToAddress(vLog.Topics[1].Bytes())
 		event.To = common.BytesToAddress(vLog.Topics[2].Bytes())
+	}
+
+	// value 是 non-indexed 参数，需要从 data 中单独解码
+	if len(vLog.Data) > 0 {
+		var valueOnly struct {
+			Value *big.Int
+		}
+		if err := s.abi.UnpackIntoInterface(&valueOnly, "Transfer", vLog.Data); err != nil {
+			log.Printf("❌ [EventService] 日志 value 解码失败: %v", err)
+			return
+		}
+		event.Value = valueOnly.Value
 	}
 
 	log.Printf("💸 [EventService] 捕获 Transfer 事件: 从 %s 到 %s, 数量: %s",

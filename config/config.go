@@ -59,3 +59,13 @@ func (c *Config) GetNodeURL() string {
 	}
 	return c.NetworkConfig.RPCURL
 }
+
+// GetRPCURL 返回 HTTP RPC 地址（用于合约调用、交易查询等）
+func (c *Config) GetRPCURL() string {
+	return c.NetworkConfig.RPCURL
+}
+
+// GetWSURL 返回 WebSocket 地址（用于事件订阅）
+func (c *Config) GetWSURL() string {
+	return c.NetworkConfig.WSURL
+}

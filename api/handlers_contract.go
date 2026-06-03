@@ -5,18 +5,17 @@ import (
 	"log"
 	"math/big"
 	"net/http"
+	"strconv"
 
 	"github.com/meu/go-ether/service"
 )
 
 type ContractHandlers struct {
-	contractService *service.ContractService
 	contractManager *service.ContractManager
 }
 
-func NewContractHandlers(contractService *service.ContractService, contractManager *service.ContractManager) *ContractHandlers {
+func NewContractHandlers(contractManager *service.ContractManager) *ContractHandlers {
 	return &ContractHandlers{
-		contractService: contractService,
 		contractManager: contractManager,
 	}
 }
@@ -115,6 +114,17 @@ func (h *ContractHandlers) ContractCurrent(w http.ResponseWriter, r *http.Reques
 	json.NewEncoder(w).Encode(current)
 }
 
+// erc20ViewMethods ERC20 视图方法白名单
+var erc20ViewMethods = map[string]bool{
+	"name": true, "symbol": true, "decimals": true, "totalSupply": true,
+	"balanceOf": true, "allowance": true,
+}
+
+// erc20WriteMethods ERC20 写方法白名单
+var erc20WriteMethods = map[string]bool{
+	"transfer": true, "mint": true, "approve": true, "transferFrom": true,
+}
+
 func (h *ContractHandlers) ContractView(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -131,23 +141,16 @@ func (h *ContractHandlers) ContractView(w http.ResponseWriter, r *http.Request) 
 
 	log.Printf("📥 [API] POST /api/contract/view - 方法: %s, 合约: %s", req.Method, req.ContractAddr)
 
-	if h.contractService == nil {
-		http.Error(w, "Contract service not available", http.StatusServiceUnavailable)
+	if erc20ViewMethods[req.Method] && h.contractManager != nil {
+		resp := h.handleERC20View(r, req)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(resp)
 		return
 	}
 
-	resp, err := h.contractService.CallViewMethod(r.Context(), req)
-	if err != nil {
-		log.Printf("❌ [API] 合约视图调用失败: %v", err)
-		http.Error(w, "Failed to call contract: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	log.Printf("✅ [API] 合约视图调用成功: %s", resp.Result)
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(resp)
+	log.Printf("❌ [API] 不支持的方法: %s", req.Method)
+	http.Error(w, "unsupported view method: "+req.Method, http.StatusBadRequest)
 }
 
 func (h *ContractHandlers) ContractCall(w http.ResponseWriter, r *http.Request) {
@@ -166,32 +169,154 @@ func (h *ContractHandlers) ContractCall(w http.ResponseWriter, r *http.Request) 
 
 	log.Printf("📥 [API] POST /api/contract/call - 方法: %s, 合约: %s", req.Method, req.ContractAddr)
 
-	if h.contractService == nil {
-		RequireSigner(w, "合约交易调用")
+	if erc20WriteMethods[req.Method] && h.contractManager != nil {
+		resp := h.handleERC20Write(r, req)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(resp)
 		return
 	}
 
-	resp, err := h.contractService.SendTransaction(r.Context(), req)
+	log.Printf("❌ [API] 不支持的方法: %s", req.Method)
+	http.Error(w, "unsupported write method: "+req.Method, http.StatusBadRequest)
+}
+
+// handleERC20View 委托 ERC20 视图方法到 ERC20Service
+func (h *ContractHandlers) handleERC20View(r *http.Request, req service.ContractCallRequest) *service.ContractCallResponse {
+	erc20, err := h.contractManager.GetERC20ServiceFor(req.ContractAddr)
 	if err != nil {
-		log.Printf("❌ [API] 合约交易调用失败: %v", err)
-		http.Error(w, "Failed to send transaction: "+err.Error(), http.StatusInternalServerError)
-		return
+		log.Printf("❌ [API] 创建 ERC20 服务失败: %v", err)
+		return &service.ContractCallResponse{Status: "error", Result: err.Error()}
 	}
 
-	log.Printf("✅ [API] 合约交易发送成功: %s", resp.TxHash)
+	switch req.Method {
+	case "name", "symbol", "decimals", "totalSupply":
+		info, err := erc20.GetTokenInfo(r.Context())
+		if err != nil {
+			return &service.ContractCallResponse{Status: "error", Result: err.Error()}
+		}
+		switch req.Method {
+		case "name":
+			return &service.ContractCallResponse{Result: info.Name, Status: "success"}
+		case "symbol":
+			return &service.ContractCallResponse{Result: info.Symbol, Status: "success"}
+		case "decimals":
+			return &service.ContractCallResponse{Result: strconv.Itoa(int(info.Decimals)), Status: "success"}
+		default:
+			return &service.ContractCallResponse{Result: info.TotalSupply.String(), Status: "success"}
+		}
+	case "balanceOf":
+		if len(req.Args) < 1 {
+			return &service.ContractCallResponse{Status: "error", Result: "balanceOf requires address argument"}
+		}
+		balance, err := erc20.BalanceOf(r.Context(), req.Args[0])
+		if err != nil {
+			return &service.ContractCallResponse{Status: "error", Result: err.Error()}
+		}
+		return &service.ContractCallResponse{Result: balance.String(), Status: "success"}
+	case "allowance":
+		if len(req.Args) < 2 {
+			return &service.ContractCallResponse{Status: "error", Result: "allowance requires owner and spender arguments"}
+		}
+		allowance, err := erc20.Allowance(r.Context(), req.Args[0], req.Args[1])
+		if err != nil {
+			return &service.ContractCallResponse{Status: "error", Result: err.Error()}
+		}
+		return &service.ContractCallResponse{Result: allowance.String(), Status: "success"}
+	default:
+		return &service.ContractCallResponse{Status: "error", Result: "unsupported method: " + req.Method}
+	}
+}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(resp)
+// handleERC20Write 委托 ERC20 写方法到 ERC20Service
+func (h *ContractHandlers) handleERC20Write(r *http.Request, req service.ContractCallRequest) *service.ContractCallResponse {
+	erc20, err := h.contractManager.GetERC20ServiceFor(req.ContractAddr)
+	if err != nil {
+		log.Printf("❌ [API] 创建 ERC20 服务失败: %v", err)
+		return &service.ContractCallResponse{Status: "error", Result: err.Error()}
+	}
+
+	switch req.Method {
+	case "transfer":
+		if len(req.Args) < 2 {
+			return &service.ContractCallResponse{Status: "error", Result: "transfer requires to and amount arguments"}
+		}
+		amount, ok := new(big.Int).SetString(req.Args[1], 10)
+		if !ok {
+			return &service.ContractCallResponse{Status: "error", Result: "invalid amount"}
+		}
+		txHash, err := erc20.Transfer(r.Context(), req.Args[0], amount)
+		if err != nil {
+			return &service.ContractCallResponse{Status: "error", Result: err.Error()}
+		}
+		return &service.ContractCallResponse{TxHash: txHash, Status: "pending"}
+	case "mint":
+		if len(req.Args) < 2 {
+			return &service.ContractCallResponse{Status: "error", Result: "mint requires to and amount arguments"}
+		}
+		amount, ok := new(big.Int).SetString(req.Args[1], 10)
+		if !ok {
+			return &service.ContractCallResponse{Status: "error", Result: "invalid amount"}
+		}
+		txHash, err := erc20.Mint(r.Context(), req.Args[0], amount)
+		if err != nil {
+			return &service.ContractCallResponse{Status: "error", Result: err.Error()}
+		}
+		return &service.ContractCallResponse{TxHash: txHash, Status: "pending"}
+	case "approve":
+		if len(req.Args) < 2 {
+			return &service.ContractCallResponse{Status: "error", Result: "approve requires spender and amount arguments"}
+		}
+		amount, ok := new(big.Int).SetString(req.Args[1], 10)
+		if !ok {
+			return &service.ContractCallResponse{Status: "error", Result: "invalid amount"}
+		}
+		txHash, err := erc20.Approve(r.Context(), req.Args[0], amount)
+		if err != nil {
+			return &service.ContractCallResponse{Status: "error", Result: err.Error()}
+		}
+		return &service.ContractCallResponse{TxHash: txHash, Status: "pending"}
+	case "transferFrom":
+		if len(req.Args) < 3 {
+			return &service.ContractCallResponse{Status: "error", Result: "transferFrom requires from, to and amount arguments"}
+		}
+		amount, ok := new(big.Int).SetString(req.Args[2], 10)
+		if !ok {
+			return &service.ContractCallResponse{Status: "error", Result: "invalid amount"}
+		}
+		txHash, err := erc20.TransferFrom(r.Context(), req.Args[0], req.Args[1], amount)
+		if err != nil {
+			return &service.ContractCallResponse{Status: "error", Result: err.Error()}
+		}
+		return &service.ContractCallResponse{TxHash: txHash, Status: "pending"}
+	default:
+		return &service.ContractCallResponse{Status: "error", Result: "unsupported method: " + req.Method}
+	}
 }
 
 func (h *ContractHandlers) TokenInfo(w http.ResponseWriter, r *http.Request) {
-	if h.getERC20Service() == nil {
+	// 支持按指定合约地址查询（用于合约详情页）
+	contractAddr := r.URL.Query().Get("address")
+
+	var erc20 *service.ERC20Service
+	if contractAddr != "" && h.contractManager != nil {
+		var err error
+		erc20, err = h.contractManager.GetERC20ServiceFor(contractAddr)
+		if err != nil {
+			log.Printf("❌ [API] 创建指定合约 ERC20Service 失败: %v", err)
+			http.Error(w, "Failed to create ERC20 service for address: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		erc20 = h.getERC20Service()
+	}
+
+	if erc20 == nil {
 		http.Error(w, "ERC20 service not available", http.StatusServiceUnavailable)
 		return
 	}
 
-	info, err := h.getERC20Service().GetTokenInfo(r.Context())
+	info, err := erc20.GetTokenInfo(r.Context())
 	if err != nil {
 		log.Printf("❌ [API] 查询代币信息失败: %v", err)
 		http.Error(w, "Failed to get token info: "+err.Error(), http.StatusInternalServerError)
@@ -207,7 +332,7 @@ func (h *ContractHandlers) TokenInfo(w http.ResponseWriter, r *http.Request) {
 		"symbol":       info.Symbol,
 		"decimals":     info.Decimals,
 		"totalSupply":  info.TotalSupply.String(),
-		"contractAddr": h.getERC20Service().ContractAddress().Hex(),
+		"contractAddr": erc20.ContractAddress().Hex(),
 	})
 }
 
