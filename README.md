@@ -16,6 +16,7 @@
 - **合约部署**：支持通过 API 部署 MyERC20 合约，部署后自动保存地址
 - **合约地址管理**：支持多合约地址管理，可通过 API 切换当前合约，支持 SQLite 持久化
 - **历史追溯**：SQLite 统一存储，通过 `tx_type` 区分 ETH 转账和 ERC20 事件，支持分页和地址过滤查询
+- **前端管理面板**：React + TypeScript + Ant Design 构建的管理界面，支持查看合约列表、部署合约、切换监听合约等功能
 
 ### 架构特性
 - **分层架构**：Client → Service → API / Store
@@ -116,6 +117,16 @@ go-ether/
 ├── tests/                   # 单元测试（统一测试目录）
 ├── wallet/                  # 钱包管理
 │   └── signer.go            # 环境变量私钥签名器
+├── web/                     # 前端管理面板（React + TypeScript + Ant Design）
+│   ├── src/
+│   │   ├── api/             # API 客户端
+│   │   ├── components/      # 公共组件
+│   │   ├── layouts/         # 布局组件
+│   │   ├── pages/           # 页面组件
+│   │   └── types/           # TypeScript 类型定义
+│   ├── package.json
+│   ├── vite.config.ts
+│   └── tsconfig.json
 ├── compile.js               # solc 合约编译脚本
 ├── main.go                  # 主入口
 ├── go.mod                   # Go 模块依赖
@@ -206,7 +217,13 @@ npm install
 node compile.js
 abigen --abi=build/MyERC20.abi --bin=build/MyERC20.bin --pkg=contracts --out=contracts/myERC20.go
 
-# 6. 编译项目
+# 6. 构建前端管理面板
+cd web
+npm install
+npm run build
+cd ..
+
+# 7. 编译项目
 go build -o mini-block-explorer .
 ```
 
@@ -475,6 +492,32 @@ A:
 ```bash
 npm install @openzeppelin/contracts
 ```
+
+## 前端管理面板
+
+### 访问地址
+
+启动服务后，访问前端管理面板：
+
+```
+http://localhost:8080/manage/index
+```
+
+### 页面功能
+
+| 页面 | 路径 | 功能描述 |
+|------|------|----------|
+| 首页 | `/manage/index` | 显示统计概览、当前监听状态、部署合约入口 |
+| 合约列表 | `/manage/contracts` | 查看所有部署的合约，支持切换监听、查看详情 |
+| 合约详情 | `/manage/contracts/:address` | 查看合约详细信息、代币信息、事件记录 |
+
+### 功能特性
+
+1. **部署合约**：首页点击"部署合约"按钮，填写表单后一键部署，部署成功后自动加入监听
+2. **合约管理**：查看所有合约列表，支持按名称、地址、网络筛选
+3. **切换监听**：点击"切换监听"按钮，快速切换当前监听的合约
+4. **状态监控**：实时显示当前监听状态、合约数量统计
+5. **事件查看**：在合约详情页查看该合约的 Transfer 事件历史
 
 ## 许可证
 

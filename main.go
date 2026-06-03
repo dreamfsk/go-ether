@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -123,7 +124,10 @@ func main() {
 	handlers := api.NewHandlers(blockService, txService, txHistoryStore)
 	txHandlers := api.NewTxHandlers(txSendService, txHistoryStore)
 	contractHandlers := api.NewContractHandlers(contractService, contractManager)
-	server := api.NewServer(handlers, txHandlers, contractHandlers, ":8080")
+
+	// 前端静态文件服务
+	staticHandler := createStaticHandler()
+	server := api.NewServer(handlers, txHandlers, contractHandlers, ":8080", staticHandler)
 
 	go func() {
 		if err := server.Start(); err != nil && err != http.ErrServerClosed {
@@ -161,4 +165,30 @@ func main() {
 	log.Println("=============================================")
 	log.Println("  ✅ 服务已完全关闭，再见！")
 	log.Println("=============================================")
+}
+
+// createStaticHandler 创建前端静态文件处理器，支持 SPA fallback
+func createStaticHandler() http.Handler {
+	distPath := "web/dist"
+	if _, err := os.Stat(distPath); os.IsNotExist(err) {
+		log.Printf("⚠️  前端静态文件目录不存在: %s", distPath)
+		return nil
+	}
+
+	fs := http.FileServer(http.Dir(distPath))
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 去掉 /manage 前缀
+		r.URL.Path = strings.TrimPrefix(r.URL.Path, "/manage")
+		if r.URL.Path == "" || r.URL.Path == "/" {
+			r.URL.Path = "/index.html"
+		}
+
+		// SPA fallback: 文件不存在时返回 index.html
+		if _, err := os.Stat(distPath + r.URL.Path); os.IsNotExist(err) {
+			r.URL.Path = "/index.html"
+		}
+
+		fs.ServeHTTP(w, r)
+	})
 }

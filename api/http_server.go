@@ -14,7 +14,7 @@ type Server struct {
 	contractHandlers *ContractHandlers
 }
 
-func NewServer(handlers *Handlers, txHandlers *TxHandlers, contractHandlers *ContractHandlers, addr string) *Server {
+func NewServer(handlers *Handlers, txHandlers *TxHandlers, contractHandlers *ContractHandlers, addr string, staticHandler http.Handler) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/block/", handlers.GetBlock)
 	mux.HandleFunc("/api/tx/", handlers.GetTransaction)
@@ -32,6 +32,10 @@ func NewServer(handlers *Handlers, txHandlers *TxHandlers, contractHandlers *Con
 	mux.HandleFunc("/api/token/transfer", contractHandlers.TokenTransfer)
 	mux.HandleFunc("/api/token/mint", contractHandlers.TokenMint)
 	mux.HandleFunc("/api/token/deploy", contractHandlers.TokenDeploy)
+
+	if staticHandler != nil {
+		mux.Handle("/manage/", staticHandler)
+	}
 
 	return &Server{
 		httpServer:       &http.Server{
