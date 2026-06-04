@@ -40,3 +40,5 @@ transactions.db
 .trae/
 .examples/
 .res/
+*.db
+got-ether

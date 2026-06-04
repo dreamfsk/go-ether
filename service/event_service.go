@@ -84,8 +84,10 @@ RECONNECT:
 		default:
 		}
 
-		attempt++
-		log.Printf("🔄 [EventService] 连接尝试 #%d", attempt)
+		if attempt > 0 {
+			// 连接中断后才打印重连信息，首次连接不打印
+			log.Printf("🔄 [EventService] 连接尝试 #%d", attempt)
+		}
 
 		query := ethereum.FilterQuery{
 			Addresses: []common.Address{s.contract},
@@ -95,20 +97,23 @@ RECONNECT:
 		sub, err := s.client.SubscribeFilterLogs(ctx, query, logsCh)
 		if err != nil {
 			log.Printf("❌ [EventService] 事件订阅失败: %v", err)
+			attempt++
 			s.sleepWithBackoff(ctx, attempt)
 			continue RECONNECT
 		}
 
+		// 连接成功后重置计数器
+		attempt = 0
 		log.Printf("✅ [EventService] 事件订阅成功，监听合约: %s", s.contract.Hex())
 
 		for {
 			select {
 			case vLog := <-logsCh:
-				log.Printf("📨 [EventService] 收到日志，区块 #%d，交易: %s", vLog.BlockNumber, vLog.TxHash.Hex())
 				s.processLog(vLog)
 			case err := <-sub.Err():
-				log.Printf("❌ [EventService] 订阅错误: %v", err)
+				log.Printf("❌ [EventService] 订阅连接断开: %v", err)
 				sub.Unsubscribe()
+				attempt++
 				s.sleepWithBackoff(ctx, attempt)
 				continue RECONNECT
 			case <-ctx.Done():

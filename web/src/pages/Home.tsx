@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Card, Button, Modal, Form, Input, message, Typography, Row, Col, Statistic, Tag, Skeleton,
+  Card, Button, Modal, Form, Input, InputNumber, message, Typography, Row, Col, Statistic, Tag, Skeleton,
 } from 'antd'
 import {
   RocketOutlined,
@@ -10,7 +10,7 @@ import {
   CheckCircleOutlined,
   DatabaseOutlined,
 } from '@ant-design/icons'
-import { deployContract, getContractList } from '../api'
+import { deployContract, getContractList, getConfig } from '../api'
 import type { ContractEntry } from '../types'
 
 const { Title, Paragraph, Text } = Typography
@@ -22,6 +22,7 @@ const Home = () => {
   const [statsLoading, setStatsLoading] = useState(true)
   const [contracts, setContracts] = useState<ContractEntry[]>([])
   const [currentAddress, setCurrentAddress] = useState('')
+  const [maxSupply, setMaxSupply] = useState<string>('')
   const [form] = Form.useForm()
 
   const fetchStats = useCallback(async () => {
@@ -41,11 +42,44 @@ const Home = () => {
     fetchStats()
   }, [fetchStats])
 
+  // 打开部署弹窗时获取配置
+  useEffect(() => {
+    if (deployOpen && !maxSupply) {
+      getConfig().then(res => setMaxSupply(res.data.maxTokenAmount))
+    }
+  }, [deployOpen, maxSupply])
+
+  // 校验供应量是否超过最大值（转最小单位后比较）
+  const validateSupply = () => {
+    const decimals = form.getFieldValue('decimals') || 18
+    const supply = form.getFieldValue('initialSupply')
+    if (!supply || !maxSupply) return
+
+    const supplyWei = BigInt(supply) * (BigInt(10) ** BigInt(decimals))
+    const maxWei = BigInt(maxSupply)
+
+    if (supplyWei > maxWei) {
+      message.error('供应量超出最大允许值')
+    }
+  }
+
   const handleDeploy = async () => {
     try {
       const values = await form.validateFields()
       setDeploying(true)
-      const res = await deployContract(values)
+
+      // 转换: 供应量 × 10^decimals = 最小单位
+      const decimals = values.decimals || 18
+      const supply = BigInt(values.initialSupply)
+      const multiplier = BigInt(10) ** BigInt(decimals)
+      const initialSupplyWei = (supply * multiplier).toString()
+
+      const res = await deployContract({
+        name: values.name,
+        symbol: values.symbol,
+        initialSupply: initialSupplyWei,
+        recipient: values.recipient || '',
+      })
       message.success(`合约部署成功！地址: ${res.data.address}`)
       setDeployOpen(false)
       form.resetFields()
@@ -195,18 +229,48 @@ const Home = () => {
             <Input placeholder="例如: MTK" />
           </Form.Item>
           <Form.Item
-            label="初始供应量（最小单位）"
-            name="initialSupply"
-            rules={[{ required: true, message: '请输入初始供应量' }]}
+            label="初始供应量"
+            required
+            style={{ marginBottom: 0 }}
           >
-            <Input placeholder="例如: 1000000000000000000000" />
+            <Input.Group compact style={{ display: 'flex' }}>
+              <Form.Item
+                name="initialSupply"
+                noStyle
+                rules={[{ required: true, message: '请输入初始供应量' }]}
+              >
+                <InputNumber
+                  style={{ flex: 1, minWidth: 120 }}
+                  placeholder="例如: 1000000"
+                  min={0}
+                  stringMode
+                  onBlur={validateSupply}
+                />
+              </Form.Item>
+              <Form.Item
+                name="decimals"
+                noStyle
+                initialValue={18}
+              >
+                <InputNumber
+                  style={{ width: 80 }}
+                  min={0}
+                  max={18}
+                  defaultValue={18}
+                  controls={false}
+                  onBlur={validateSupply}
+                />
+              </Form.Item>
+            </Input.Group>
           </Form.Item>
+          <div style={{ color: 'rgba(0,0,0,0.45)', fontSize: 12, marginBottom: 16 }}>
+            实际发送数量 = 供应量 × 10^decimals，当前 decimals 默认 18
+          </div>
           <Form.Item
-            label="接收地址"
+            label="接收地址（可选，默认为部署者）"
             name="recipient"
-            rules={[{ required: true, message: '请输入接收地址' }]}
           >
-            <Input placeholder="0x..." />
+            <Input placeholder="0x...（留空则默认发送给部署者）" />
           </Form.Item>
         </Form>
       </Modal>

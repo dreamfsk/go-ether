@@ -10,6 +10,10 @@ import type {
   EventsResponse,
 } from '../types'
 
+export interface ConfigResponse {
+  maxTokenAmount: string
+}
+
 const api = axios.create({
   baseURL: '/api',
   timeout: 15000,
@@ -51,5 +55,9 @@ export const deployContract = (data: DeployRequest) =>
 /** 获取事件列表 */
 export const getEvents = (params?: { address?: string; limit?: number; offset?: number }) =>
   api.get<EventsResponse>('/events', { params })
+
+/** 获取配置信息 */
+export const getConfig = () =>
+  api.get<ConfigResponse>('/config')
 
 export default api

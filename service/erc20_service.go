@@ -201,7 +201,11 @@ func DeployERC20(ctx context.Context, c *client.EthClient, signer wallet.Signer,
 	}
 	auth.GasPrice = gasPrice
 
-	recipientAddr := common.HexToAddress(recipient)
+	// 如果 recipient 为空，使用部署者地址作为初始代币接收者
+	recipientAddr := signer.Address()
+	if recipient != "" {
+		recipientAddr = common.HexToAddress(recipient)
+	}
 
 	addr, tx, _, err := contracts.DeployMyERC20(auth, c, name, symbol, initialSupply, recipientAddr)
 	if err != nil {

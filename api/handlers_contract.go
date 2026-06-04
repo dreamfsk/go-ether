@@ -115,6 +115,18 @@ func (h *ContractHandlers) ContractCurrent(w http.ResponseWriter, r *http.Reques
 	json.NewEncoder(w).Encode(current)
 }
 
+// ConfigResponse 返回前端需要的配置信息
+type ConfigResponse struct {
+	MaxTokenAmount string `json:"maxTokenAmount"`
+}
+
+func (h *ContractHandlers) Config(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ConfigResponse{
+		MaxTokenAmount: maxTokenAmount().String(),
+	})
+}
+
 // erc20ViewMethods ERC20 视图方法白名单
 var erc20ViewMethods = map[string]bool{
 	"name": true, "symbol": true, "decimals": true, "totalSupply": true,
@@ -532,8 +544,8 @@ func (h *ContractHandlers) TokenDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Name == "" || req.Symbol == "" || req.InitialSupply == "" || req.Recipient == "" {
-		http.Error(w, "name, symbol, initialSupply and recipient are required", http.StatusBadRequest)
+	if req.Name == "" || req.Symbol == "" || req.InitialSupply == "" {
+		http.Error(w, "name, symbol and initialSupply are required", http.StatusBadRequest)
 		return
 	}
 

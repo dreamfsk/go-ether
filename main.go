@@ -174,30 +174,39 @@ func createStaticHandler() http.Handler {
 	absDistPath = filepath.Clean(absDistPath) + string(filepath.Separator)
 
 	fs := http.FileServer(http.Dir(distPath))
+	// absDistPath 不含结尾分隔符，用于前缀匹配
+	absDistDir := strings.TrimSuffix(absDistPath, string(filepath.Separator))
 
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 去掉 /manage 前缀
-		r.URL.Path = strings.TrimPrefix(r.URL.Path, "/manage")
-		if r.URL.Path == "" || r.URL.Path == "/" {
-			r.URL.Path = "/index.html"
-		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// 去掉 /manage 前缀
+			r.URL.Path = strings.TrimPrefix(r.URL.Path, "/manage")
+			if r.URL.Path == "" || r.URL.Path == "/" {
+				r.URL.Path = "/"
+			}
 
-		// 路径穿越防护：清理后验证仍在 dist 目录内
-		cleanedPath := filepath.Clean(r.URL.Path)
-		fullPath := filepath.Join(absDistPath, cleanedPath)
-		if !strings.HasPrefix(fullPath, absDistPath) {
-			log.Printf("⚠️  [Static] 拒绝路径穿越访问: %s", r.URL.Path)
-			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
-			return
-		}
+			// 路径穿越防护：清理后验证仍在 dist 目录内
+			cleanedPath := filepath.Clean(r.URL.Path)
+			fullPath := filepath.Join(absDistPath, cleanedPath)
+			if !strings.HasPrefix(fullPath, absDistDir) {
+				log.Printf("⚠️  [Static] 拒绝路径穿越访问: %s", r.URL.Path)
+				http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+				return
+			}
 
-		// SPA fallback: 文件不存在时返回 index.html
-		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-			r.URL.Path = "/index.html"
-		} else {
-			r.URL.Path = "/" + cleanedPath
-		}
+			// SPA fallback: 文件不存在时返回 index.html
+			info, statErr := os.Stat(fullPath)
+			if statErr != nil || info.IsDir() {
+				// 目录或无文件 → 返回 index.html（直接读取避免 serveFile 的 index.html 重定向）
+				if statErr == nil && info.IsDir() {
+					// 是目录，让 FileServer 自动处理 index.html
+					fs.ServeHTTP(w, r)
+					return
+				}
+				// SPA fallback: 直接读取 index.html 文件内容返回
+				http.ServeFile(w, r, filepath.Join(absDistPath, "index.html"))
+				return
+			}
 
-		fs.ServeHTTP(w, r)
-	})
+			fs.ServeHTTP(w, r)
+		})
 }
