@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,16 +13,16 @@ import (
 )
 
 type Handlers struct {
-	blockService *service.BlockService
-	txService    *service.TxService
-	eventStore   *store.EventStore
+	blockService   *service.BlockService
+	txService      *service.TxService
+	txHistoryStore *store.TxHistoryStore
 }
 
-func NewHandlers(bs *service.BlockService, ts *service.TxService, es *store.EventStore) *Handlers {
+func NewHandlers(bs *service.BlockService, ts *service.TxService, ths *store.TxHistoryStore) *Handlers {
 	return &Handlers{
-		blockService: bs,
-		txService:    ts,
-		eventStore:   es,
+		blockService:   bs,
+		txService:      ts,
+		txHistoryStore: ths,
 	}
 }
 
@@ -39,7 +40,7 @@ func (h *Handlers) GetBlock(w http.ResponseWriter, r *http.Request) {
 	block, err := h.blockService.GetBlockByID(r.Context(), id)
 	if err != nil {
 		log.Printf("❌ [API] GET /api/block/%s: 错误 - %v", id, err)
-		http.Error(w, "failed to get block: "+err.Error(), http.StatusNotFound)
+		http.Error(w, "block not found", http.StatusNotFound)
 		return
 	}
 
@@ -62,7 +63,7 @@ func (h *Handlers) GetTransaction(w http.ResponseWriter, r *http.Request) {
 	tx, err := h.txService.GetTransactionByHash(r.Context(), hash)
 	if err != nil {
 		log.Printf("❌ [API] GET /api/tx/%s: 错误 - %v", hash, err)
-		http.Error(w, "failed to get transaction: "+err.Error(), http.StatusNotFound)
+		http.Error(w, "transaction not found", http.StatusNotFound)
 		return
 	}
 
@@ -73,11 +74,56 @@ func (h *Handlers) GetTransaction(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) GetEvents(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	log.Printf("📥 [API] GET /api/events from %s", r.RemoteAddr)
+	address := r.URL.Query().Get("address")
 	
-	events := h.eventStore.List()
+	limit := 20
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
 	
-	log.Printf("✅ [API] GET /api/events: 成功获取 %d 条事件, 耗时 %v", len(events), time.Since(start))
+	offset := 0
+	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
+		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
+			offset = o
+		}
+	}
+	
+	log.Printf("📥 [API] GET /api/events from %s, address: %s, limit: %d, offset: %d", r.RemoteAddr, address, limit, offset)
+	
+	var events []store.TxHistoryEntry
+	var total int
+	var errList, errCount error
+	
+	if address != "" {
+		events, errList = h.txHistoryStore.ListByTypeAndAddress("erc20_transfer", strings.ToLower(address), limit, offset)
+		total, errCount = h.txHistoryStore.CountByTypeAndAddress("erc20_transfer", strings.ToLower(address))
+	} else {
+		events, errList = h.txHistoryStore.ListByType("erc20_transfer", limit, offset)
+		total, errCount = h.txHistoryStore.CountByType("erc20_transfer")
+	}
+	
+	if errList != nil {
+		log.Printf("❌ [API] GET /api/events: 查询事件失败 - %v", errList)
+		http.Error(w, "failed to get events", http.StatusInternalServerError)
+		return
+	}
+	if errCount != nil {
+		log.Printf("❌ [API] GET /api/events: 统计事件数失败 - %v", errCount)
+		http.Error(w, "failed to count events", http.StatusInternalServerError)
+		return
+	}
+	
+	log.Printf("✅ [API] GET /api/events: 成功获取 %d/%d 条事件, 耗时 %v", len(events), total, time.Since(start))
+	
+	response := map[string]interface{}{
+		"events": events,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	}
+	
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(events)
+	json.NewEncoder(w).Encode(response)
 }

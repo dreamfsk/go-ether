@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -15,10 +16,11 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/meu/go-ether/client"
+	"github.com/meu/go-ether/config"
 	"github.com/meu/go-ether/store"
 )
 
-const abiFilePath = "abi.json"
+const abiFilePath = "build/MyERC20.abi"
 
 func loadABI() (string, error) {
 	absPath, err := filepath.Abs(abiFilePath)
@@ -28,20 +30,21 @@ func loadABI() (string, error) {
 
 	data, err := os.ReadFile(absPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to read ABI file (%s): %w", absPath, err)
+		return "", fmt.Errorf("failed to read ABI file (%s): %w。请运行 node compile.js 编译合约", absPath, err)
 	}
 
 	return string(data), nil
 }
 
 type EventService struct {
-	client   *client.EthClient
-	store    *store.EventStore
-	contract common.Address
-	abi      abi.ABI
+	client    *client.EthClient
+	txHistory *store.TxHistoryStore
+	contract  common.Address
+	network   string
+	abi       abi.ABI
 }
 
-func NewEventService(c *client.EthClient, s *store.EventStore, contractAddr string) (*EventService, error) {
+func NewEventService(c *client.EthClient, txHistory *store.TxHistoryStore, network config.NetworkType, contractAddr string) (*EventService, error) {
 	log.Printf("🔧 [EventService] 初始化，合约地址: %s", contractAddr)
 
 	abiJSON, err := loadABI()
@@ -59,42 +62,75 @@ func NewEventService(c *client.EthClient, s *store.EventStore, contractAddr stri
 
 	log.Println("✅ [EventService] ABI 解析成功")
 	return &EventService{
-		client:   c,
-		store:    s,
-		contract: common.HexToAddress(contractAddr),
-		abi:      parsedABI,
+		client:    c,
+		txHistory: txHistory,
+		contract:  common.HexToAddress(contractAddr),
+		network:   string(network),
+		abi:       parsedABI,
 	}, nil
 }
 
 func (s *EventService) StartListening(ctx context.Context) {
 	log.Println("👂 [EventService] 开始订阅 ERC20 Transfer 事件...")
-	
-	query := ethereum.FilterQuery{
-		Addresses: []common.Address{s.contract},
-	}
 
-	logsCh := make(chan types.Log)
-	sub, err := s.client.SubscribeFilterLogs(ctx, query, logsCh)
-	if err != nil {
-		log.Printf("❌ [EventService] 事件订阅失败: %v", err)
-		return
-	}
-	defer sub.Unsubscribe()
+	var attempt int
 
-	log.Printf("✅ [EventService] 事件订阅成功，监听合约: %s", s.contract.Hex())
-
+RECONNECT:
 	for {
 		select {
-		case vLog := <-logsCh:
-			log.Printf("📨 [EventService] 收到日志，区块 #%d，交易: %s", vLog.BlockNumber, vLog.TxHash.Hex())
-			s.processLog(vLog)
-		case err := <-sub.Err():
-			log.Printf("❌ [EventService] 订阅错误: %v", err)
-			return
 		case <-ctx.Done():
 			log.Println("🔄 [EventService] 上下文被取消，停止监听")
 			return
+		default:
 		}
+
+		attempt++
+		log.Printf("🔄 [EventService] 连接尝试 #%d", attempt)
+
+		query := ethereum.FilterQuery{
+			Addresses: []common.Address{s.contract},
+		}
+
+		logsCh := make(chan types.Log)
+		sub, err := s.client.SubscribeFilterLogs(ctx, query, logsCh)
+		if err != nil {
+			log.Printf("❌ [EventService] 事件订阅失败: %v", err)
+			s.sleepWithBackoff(ctx, attempt)
+			continue RECONNECT
+		}
+
+		log.Printf("✅ [EventService] 事件订阅成功，监听合约: %s", s.contract.Hex())
+
+		for {
+			select {
+			case vLog := <-logsCh:
+				log.Printf("📨 [EventService] 收到日志，区块 #%d，交易: %s", vLog.BlockNumber, vLog.TxHash.Hex())
+				s.processLog(vLog)
+			case err := <-sub.Err():
+				log.Printf("❌ [EventService] 订阅错误: %v", err)
+				sub.Unsubscribe()
+				s.sleepWithBackoff(ctx, attempt)
+				continue RECONNECT
+			case <-ctx.Done():
+				log.Println("🔄 [EventService] 上下文被取消，停止监听")
+				sub.Unsubscribe()
+				return
+			}
+		}
+	}
+}
+
+func (s *EventService) sleepWithBackoff(ctx context.Context, attempt int) {
+	sec := int(math.Min(60, math.Pow(2, float64(attempt))))
+	d := time.Duration(sec) * time.Second
+	log.Printf("⏳ [EventService] 将在 %s 后尝试重连", d)
+
+	t := time.NewTimer(d)
+	defer t.Stop()
+
+	select {
+	case <-t.C:
+	case <-ctx.Done():
 	}
 }
 
@@ -104,31 +140,53 @@ func (s *EventService) processLog(vLog types.Log) {
 		return
 	}
 
+	// 检查是否为 Transfer 事件 (topic hash)
+	transferEventSig := s.abi.Events["Transfer"].ID
+	if vLog.Topics[0] != transferEventSig {
+		return
+	}
+
 	var event struct {
 		From  common.Address
 		To    common.Address
 		Value *big.Int
 	}
 
-	if err := s.abi.UnpackIntoInterface(&event, "Transfer", vLog.Data); err != nil {
-		log.Printf("❌ [EventService] 日志数据解析失败: %v", err)
-		return
-	}
-
+	// ERC20 Transfer 事件的 from/to 是 indexed 参数，位于 topics[1] 和 topics[2]
 	if len(vLog.Topics) >= 3 {
 		event.From = common.BytesToAddress(vLog.Topics[1].Bytes())
 		event.To = common.BytesToAddress(vLog.Topics[2].Bytes())
 	}
 
-	log.Printf("💸 [EventService] 捕获 Transfer 事件: 从 %s 到 %s, 数量: %s", 
+	// value 是 non-indexed 参数，需要从 data 中单独解码
+	if len(vLog.Data) > 0 {
+		var valueOnly struct {
+			Value *big.Int
+		}
+		if err := s.abi.UnpackIntoInterface(&valueOnly, "Transfer", vLog.Data); err != nil {
+			log.Printf("❌ [EventService] 日志 value 解码失败: %v", err)
+			return
+		}
+		event.Value = valueOnly.Value
+	}
+
+	log.Printf("💸 [EventService] 捕获 Transfer 事件: 从 %s 到 %s, 数量: %s",
 		event.From.Hex(), event.To.Hex(), event.Value.String())
 
-	s.store.Add(store.TransferEvent{
-		BlockNumber: vLog.BlockNumber,
-		TxHash:      vLog.TxHash.Hex(),
-		From:        event.From.Hex(),
-		To:          event.To.Hex(),
-		Value:       event.Value.String(),
-		Timestamp:   time.Now(),
-	})
+	// 写入 SQLite 持久化
+	if s.txHistory != nil {
+		if err := s.txHistory.Add(store.TxHistoryEntry{
+			TxHash:      vLog.TxHash.Hex(),
+			FromAddr:    event.From.Hex(),
+			ToAddr:      event.To.Hex(),
+			Value:       event.Value.String(),
+			BlockNumber: vLog.BlockNumber,
+			Status:      store.TxStatusSuccess, // 链上事件已确认
+			Network:     s.network,
+			TxType:      "erc20_transfer",
+			CreatedAt:   time.Now(),
+		}); err != nil {
+			log.Printf("⚠️  [EventService] 持久化事件失败: %v", err)
+		}
+	}
 }

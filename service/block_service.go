@@ -39,7 +39,7 @@ func (s *BlockService) GetBlockByID(ctx context.Context, id string) (*BlockInfo,
 	var err error
 
 	if blockNumber, parseErr := strconv.ParseUint(id, 10, 64); parseErr == nil {
-		block, err = s.client.BlockByNumber(ctx, big.NewInt(int64(blockNumber)))
+		block, err = s.client.BlockByNumber(ctx, new(big.Int).SetUint64(blockNumber))
 	} else {
 		blockHash := common.HexToHash(id)
 		block, err = s.client.BlockByHash(ctx, blockHash)
@@ -48,6 +48,11 @@ func (s *BlockService) GetBlockByID(ctx context.Context, id string) (*BlockInfo,
 	if err != nil {
 		log.Printf("❌ [BlockService] 查询区块失败: %v", err)
 		return nil, fmt.Errorf("failed to get block: %w", err)
+	}
+
+	if block == nil {
+		log.Printf("❌ [BlockService] 区块未找到: %s", id)
+		return nil, fmt.Errorf("block not found: %s", id)
 	}
 
 	info := convertBlock(block)

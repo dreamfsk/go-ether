@@ -3,8 +3,6 @@ package config
 import (
 	"log"
 	"os"
-
-	dotenv "github.com/joho/godotenv"
 )
 
 type Config struct {
@@ -13,13 +11,8 @@ type Config struct {
 	ERC20Contract string
 }
 
+// Load 加载配置（.env 文件由 main.go 统一加载，此处直接读取环境变量）
 func Load() *Config {
-	// 加载 .env 文件
-	err := dotenv.Load()
-	if err != nil {
-		log.Println("Warning: .env file not found, using environment variables")
-	}
-
 	// 获取网络配置
 	networkName := os.Getenv("NETWORK")
 	var network NetworkType
@@ -58,4 +51,14 @@ func (c *Config) GetNodeURL() string {
 		return c.NetworkConfig.WSURL
 	}
 	return c.NetworkConfig.RPCURL
+}
+
+// GetRPCURL 返回 HTTP RPC 地址（用于合约调用、交易查询等）
+func (c *Config) GetRPCURL() string {
+	return c.NetworkConfig.RPCURL
+}
+
+// GetWSURL 返回 WebSocket 地址（用于事件订阅）
+func (c *Config) GetWSURL() string {
+	return c.NetworkConfig.WSURL
 }

@@ -7,19 +7,21 @@ import (
 	"strconv"
 
 	"github.com/meu/go-ether/service"
-	"github.com/meu/go-ether/store"
 )
 
 type TxHandlers struct {
-	txSendService *service.TxSendService
-	txHistory     *store.TxHistoryStore
+	manager *service.ContractManager
 }
 
-func NewTxHandlers(txSendService *service.TxSendService, txHistory *store.TxHistoryStore) *TxHandlers {
-	return &TxHandlers{
-		txSendService: txSendService,
-		txHistory:     txHistory,
+func NewTxHandlers(manager *service.ContractManager) *TxHandlers {
+	return &TxHandlers{manager: manager}
+}
+
+func (h *TxHandlers) getTxSendService() *service.TxSendService {
+	if h.manager == nil {
+		return nil
 	}
+	return h.manager.GetTxSendService()
 }
 
 func (h *TxHandlers) SendTransaction(w http.ResponseWriter, r *http.Request) {
@@ -38,15 +40,16 @@ func (h *TxHandlers) SendTransaction(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("📥 [API] POST /api/tx/send - 目标: %s, 金额: %s", req.To, req.Value)
 
-	if h.txSendService == nil {
-		http.Error(w, "Transaction send service not available", http.StatusServiceUnavailable)
+	txSendService := h.getTxSendService()
+	if txSendService == nil {
+		RequireSigner(w, "ETH 交易发送")
 		return
 	}
 
-	resp, err := h.txSendService.SendTransaction(r.Context(), req)
+	resp, err := txSendService.SendTransaction(r.Context(), req)
 	if err != nil {
 		log.Printf("❌ [API] 发送交易失败: %v", err)
-		http.Error(w, "Failed to send transaction: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to send transaction", http.StatusInternalServerError)
 		return
 	}
 
@@ -82,10 +85,10 @@ func (h *TxHandlers) GetTxHistory(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("📥 [API] GET /api/tx/history - limit: %d, offset: %d", limit, offset)
 
-	entries, err := h.txHistory.List(limit, offset)
+	entries, err := h.manager.GetTxHistory().List(limit, offset)
 	if err != nil {
 		log.Printf("❌ [API] 查询交易历史失败: %v", err)
-		http.Error(w, "Failed to get transaction history: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to get transaction history", http.StatusInternalServerError)
 		return
 	}
 
@@ -105,10 +108,10 @@ func (h *TxHandlers) GetTxByHash(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("📥 [API] GET /api/tx/detail - hash: %s", txHash)
 
-	entry, err := h.txHistory.GetByHash(txHash)
+	entry, err := h.manager.GetTxHistory().GetByHash(txHash)
 	if err != nil {
 		log.Printf("❌ [API] 查询交易详情失败: %v", err)
-		http.Error(w, "Failed to get transaction: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to get transaction", http.StatusInternalServerError)
 		return
 	}
 

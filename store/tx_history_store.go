@@ -71,7 +71,7 @@ func createTxHistoryTable(db *sql.DB) error {
 		tx_type TEXT,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
-	
+
 	CREATE INDEX IF NOT EXISTS idx_tx_hash ON tx_history(tx_hash);
 	CREATE INDEX IF NOT EXISTS idx_from_addr ON tx_history(from_addr);
 	CREATE INDEX IF NOT EXISTS idx_network ON tx_history(network);
@@ -84,7 +84,7 @@ func createTxHistoryTable(db *sql.DB) error {
 func (s *TxHistoryStore) Add(entry TxHistoryEntry) error {
 	_, err := s.db.Exec(`
 	INSERT INTO tx_history (
-		tx_hash, from_addr, to_addr, value, gas_limit, gas_price, 
+		tx_hash, from_addr, to_addr, value, gas_limit, gas_price,
 		nonce, data, status, block_number, network, tx_type, created_at
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(tx_hash) DO UPDATE SET status = excluded.status, block_number = excluded.block_number`,
@@ -103,7 +103,7 @@ func (s *TxHistoryStore) Add(entry TxHistoryEntry) error {
 
 func (s *TxHistoryStore) GetByHash(txHash string) (*TxHistoryEntry, error) {
 	row := s.db.QueryRow(`
-	SELECT id, tx_hash, from_addr, to_addr, value, gas_limit, gas_price, 
+	SELECT id, tx_hash, from_addr, to_addr, value, gas_limit, gas_price,
 	       nonce, data, status, block_number, network, tx_type, created_at
 	FROM tx_history WHERE tx_hash = ?`, txHash)
 
@@ -128,7 +128,7 @@ func (s *TxHistoryStore) GetByHash(txHash string) (*TxHistoryEntry, error) {
 
 func (s *TxHistoryStore) List(limit, offset int) ([]TxHistoryEntry, error) {
 	rows, err := s.db.Query(`
-	SELECT id, tx_hash, from_addr, to_addr, value, gas_limit, gas_price, 
+	SELECT id, tx_hash, from_addr, to_addr, value, gas_limit, gas_price,
 	       nonce, data, status, block_number, network, tx_type, created_at
 	FROM tx_history ORDER BY created_at DESC LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
@@ -152,17 +152,95 @@ func (s *TxHistoryStore) List(limit, offset int) ([]TxHistoryEntry, error) {
 		entries = append(entries, entry)
 	}
 
+	if err := rows.Err(); err != nil {
+		log.Printf("❌ [TxHistoryStore] 遍历交易记录失败: %v", err)
+		return nil, err
+	}
+
+	return entries, nil
+}
+
+func (s *TxHistoryStore) ListByType(txType string, limit, offset int) ([]TxHistoryEntry, error) {
+	rows, err := s.db.Query(`
+	SELECT id, tx_hash, from_addr, to_addr, value, gas_limit, gas_price,
+	       nonce, data, status, block_number, network, tx_type, created_at
+	FROM tx_history WHERE tx_type = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`, txType, limit, offset)
+	if err != nil {
+		log.Printf("❌ [TxHistoryStore] 按类型查询交易列表失败: %v", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []TxHistoryEntry
+	for rows.Next() {
+		var entry TxHistoryEntry
+		err := rows.Scan(
+			&entry.ID, &entry.TxHash, &entry.FromAddr, &entry.ToAddr,
+			&entry.Value, &entry.GasLimit, &entry.GasPrice, &entry.Nonce,
+			&entry.Data, &entry.Status, &entry.BlockNumber, &entry.Network,
+			&entry.TxType, &entry.CreatedAt)
+		if err != nil {
+			log.Printf("❌ [TxHistoryStore] 按类型扫描交易记录失败: %v", err)
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+
+	if err := rows.Err(); err != nil {
+		log.Printf("❌ [TxHistoryStore] 按类型遍历交易记录失败: %v", err)
+		return nil, err
+	}
+
+	return entries, nil
+}
+
+func (s *TxHistoryStore) ListByTypeAndAddress(txType, address string, limit, offset int) ([]TxHistoryEntry, error) {
+	rows, err := s.db.Query(`
+	SELECT id, tx_hash, from_addr, to_addr, value, gas_limit, gas_price,
+	       nonce, data, status, block_number, network, tx_type, created_at
+	FROM tx_history WHERE tx_type = ? AND (from_addr = ? OR to_addr = ?)
+	ORDER BY created_at DESC LIMIT ? OFFSET ?`, txType, address, address, limit, offset)
+	if err != nil {
+		log.Printf("❌ [TxHistoryStore] 按类型和地址查询交易列表失败: %v", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []TxHistoryEntry
+	for rows.Next() {
+		var entry TxHistoryEntry
+		err := rows.Scan(
+			&entry.ID, &entry.TxHash, &entry.FromAddr, &entry.ToAddr,
+			&entry.Value, &entry.GasLimit, &entry.GasPrice, &entry.Nonce,
+			&entry.Data, &entry.Status, &entry.BlockNumber, &entry.Network,
+			&entry.TxType, &entry.CreatedAt)
+		if err != nil {
+			log.Printf("❌ [TxHistoryStore] 按类型和地址扫描交易记录失败: %v", err)
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+
+	if err := rows.Err(); err != nil {
+		log.Printf("❌ [TxHistoryStore] 按类型和地址遍历交易记录失败: %v", err)
+		return nil, err
+	}
+
 	return entries, nil
 }
 
 func (s *TxHistoryStore) UpdateStatus(txHash string, status TxStatus, blockNumber uint64) error {
-	_, err := s.db.Exec(`
+	result, err := s.db.Exec(`
 	UPDATE tx_history SET status = ?, block_number = ? WHERE tx_hash = ?`,
 		status, blockNumber, txHash)
-
 	if err != nil {
 		log.Printf("❌ [TxHistoryStore] 更新交易状态失败: %v", err)
 		return err
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		log.Printf("⚠️  [TxHistoryStore] 更新状态时未找到交易: %s", txHash)
 	}
 
 	log.Printf("📝 [TxHistoryStore] 交易状态已更新: %s -> %d", txHash, status)
@@ -172,7 +250,31 @@ func (s *TxHistoryStore) UpdateStatus(txHash string, status TxStatus, blockNumbe
 func (s *TxHistoryStore) Count() (int, error) {
 	var count int
 	err := s.db.QueryRow("SELECT COUNT(*) FROM tx_history").Scan(&count)
-	return count, err
+	if err != nil {
+		log.Printf("❌ [TxHistoryStore] 统计交易总数失败: %v", err)
+		return 0, err
+	}
+	return count, nil
+}
+
+func (s *TxHistoryStore) CountByType(txType string) (int, error) {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM tx_history WHERE tx_type = ?", txType).Scan(&count)
+	if err != nil {
+		log.Printf("❌ [TxHistoryStore] 按类型统计失败: %v", err)
+		return 0, err
+	}
+	return count, nil
+}
+
+func (s *TxHistoryStore) CountByTypeAndAddress(txType, address string) (int, error) {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM tx_history WHERE tx_type = ? AND (from_addr = ? OR to_addr = ?)", txType, address, address).Scan(&count)
+	if err != nil {
+		log.Printf("❌ [TxHistoryStore] 按类型和地址统计失败: %v", err)
+		return 0, err
+	}
+	return count, nil
 }
 
 func (s *TxHistoryStore) Close() error {

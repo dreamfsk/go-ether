@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"os"
 
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -15,6 +16,8 @@ import (
 type Signer interface {
 	SignTx(ctx context.Context, tx *types.Transaction, chainID *big.Int) (*types.Transaction, error)
 	Address() common.Address
+	// TransactOpts 创建用于合约交互的 TransactOpts（内部使用私钥，不暴露）
+	TransactOpts(ctx context.Context, chainID *big.Int) (*bind.TransactOpts, error)
 }
 
 type EnvSigner struct {
@@ -63,4 +66,9 @@ func (s *EnvSigner) SignTx(ctx context.Context, tx *types.Transaction, chainID *
 
 func (s *EnvSigner) Address() common.Address {
 	return s.address
+}
+
+// TransactOpts 创建用于合约交互的 TransactOpts，隐藏私钥细节
+func (s *EnvSigner) TransactOpts(ctx context.Context, chainID *big.Int) (*bind.TransactOpts, error) {
+	return bind.NewKeyedTransactorWithChainID(s.privateKey, chainID)
 }
