@@ -72,14 +72,40 @@ func main() {
 
 	var signer wallet.Signer
 	log.Println("🔐 初始化钱包...")
-	envSigner, err := wallet.NewEnvSigner()
-	if err != nil {
-		log.Printf("⚠️  钱包初始化失败: %v", err)
-		log.Println("   交易发送功能将不可用")
-		signer = nil
-	} else {
-		signer = envSigner
-		log.Printf("✅ 钱包初始化成功")
+	
+	walletCfg := config.LoadWalletConfig()
+	log.Printf("   - Keystore 路径配置: %s", walletCfg.KeystorePath)
+	log.Printf("   - 环境变量私钥配置: %s", func() string {
+		if os.Getenv("SENDER_PRIVATE_KEY") != "" {
+			return "已配置"
+		}
+		return "未配置"
+	}())
+	
+	// 优先尝试 keystore 方式
+	if walletCfg.KeystorePath != "" && walletCfg.KeystorePassword != "" {
+		keystoreSigner, err := wallet.NewKeystoreSignerFromPath(walletCfg.KeystorePath, walletCfg.KeystorePassword)
+		if err != nil {
+			log.Printf("⚠️  Keystore 钱包初始化失败: %v", err)
+			log.Println("   尝试使用环境变量方式...")
+		} else {
+			signer = keystoreSigner
+			log.Printf("✅ Keystore 钱包初始化成功，地址: %s", keystoreSigner.Address().Hex())
+			log.Printf("   Keystore 路径: %s", walletCfg.KeystorePath)
+		}
+	}
+	
+	// 如果 keystore 方式失败或未配置，尝试环境变量方式
+	if signer == nil {
+		envSigner, err := wallet.NewEnvSigner()
+		if err != nil {
+			log.Printf("⚠️  环境变量钱包初始化失败: %v", err)
+			log.Printf("   交易发送功能将不可用")
+			signer = nil
+		} else {
+			signer = envSigner
+			log.Printf("✅ 环境变量钱包初始化成功，地址: %s", envSigner.Address().Hex())
+		}
 	}
 
 	log.Println("🔧 初始化服务组件...")

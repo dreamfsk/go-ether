@@ -75,6 +75,7 @@ func (h *Handlers) GetTransaction(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) GetEvents(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	address := r.URL.Query().Get("address")
+	contractOnly := r.URL.Query().Get("contractOnly") == "true"
 	
 	limit := 20
 	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
@@ -90,18 +91,24 @@ func (h *Handlers) GetEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	
-	log.Printf("📥 [API] GET /api/events from %s, address: %s, limit: %d, offset: %d", r.RemoteAddr, address, limit, offset)
+	log.Printf("📥 [API] GET /api/events from %s, address: %s, contractOnly: %v, limit: %d, offset: %d", r.RemoteAddr, address, contractOnly, limit, offset)
 	
 	var events []store.TxHistoryEntry
 	var total int
 	var errList, errCount error
 	
 	if address != "" {
-		events, errList = h.txHistoryStore.ListByTypeAndAddress("erc20_transfer", strings.ToLower(address), limit, offset)
-		total, errCount = h.txHistoryStore.CountByTypeAndAddress("erc20_transfer", strings.ToLower(address))
+		lowerAddress := strings.ToLower(address)
+		if contractOnly {
+			events, errList = h.txHistoryStore.ListByContractAddr(lowerAddress, limit, offset)
+			total, errCount = h.txHistoryStore.CountByContractAddr(lowerAddress)
+		} else {
+			events, errList = h.txHistoryStore.ListByAddress(lowerAddress, limit, offset)
+			total, errCount = h.txHistoryStore.CountByAddress(lowerAddress)
+		}
 	} else {
-		events, errList = h.txHistoryStore.ListByType("erc20_transfer", limit, offset)
-		total, errCount = h.txHistoryStore.CountByType("erc20_transfer")
+		events, errList = h.txHistoryStore.List(limit, offset)
+		total, errCount = h.txHistoryStore.Count()
 	}
 	
 	if errList != nil {

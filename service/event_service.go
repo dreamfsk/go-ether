@@ -73,6 +73,9 @@ func NewEventService(c *client.EthClient, txHistory *store.TxHistoryStore, netwo
 func (s *EventService) StartListening(ctx context.Context) {
 	log.Println("👂 [EventService] 开始订阅 ERC20 Transfer 事件...")
 
+	// 启动时回填现有记录的 contract_addr
+	go s.migrateContractAddr(ctx)
+
 	var attempt int
 
 RECONNECT:
@@ -139,6 +142,45 @@ func (s *EventService) sleepWithBackoff(ctx context.Context, attempt int) {
 	}
 }
 
+// migrateContractAddr 回填旧有 ERC-20 记录的 contract_addr（从链上交易收据获取）
+func (s *EventService) migrateContractAddr(ctx context.Context) {
+	log.Println("🔄 [EventService] 开始回填 contract_addr...")
+
+	entries, err := s.txHistory.ListByContractAddr("", 50, 0)
+	if err != nil {
+		log.Printf("❌ [EventService] 回填 contract_addr 失败: %v", err)
+		return
+	}
+
+	if len(entries) == 0 {
+		log.Println("✅ [EventService] contract_addr 回填完成（无需回填）")
+		return
+	}
+
+	updated := 0
+	for _, entry := range entries {
+		receipt, err := s.client.TransactionReceipt(ctx, common.HexToHash(entry.TxHash))
+		if err != nil {
+			log.Printf("⚠️  [EventService] 获取交易收据失败 %s: %v", entry.TxHash, err)
+			continue
+		}
+
+		// 从交易收据的 logs 中找到 Transfer 事件，它的 Address 就是合约地址
+		for _, receiptLog := range receipt.Logs {
+			if len(receiptLog.Topics) > 0 && receiptLog.Topics[0] == s.abi.Events["Transfer"].ID {
+				if err := s.txHistory.UpdateContractAddr(entry.TxHash, receiptLog.Address.Hex()); err != nil {
+					log.Printf("⚠️  [EventService] 更新 contract_addr 失败 %s: %v", entry.TxHash, err)
+				} else {
+					updated++
+				}
+				break
+			}
+		}
+	}
+
+	log.Printf("✅ [EventService] contract_addr 回填完成: 更新了 %d/%d 条记录", updated, len(entries))
+}
+
 func (s *EventService) processLog(vLog types.Log) {
 	if len(vLog.Topics) == 0 {
 		log.Printf("⚠️  [EventService] 跳过无效日志（无 Topics）")
@@ -185,10 +227,11 @@ func (s *EventService) processLog(vLog types.Log) {
 			FromAddr:    event.From.Hex(),
 			ToAddr:      event.To.Hex(),
 			Value:       event.Value.String(),
-			BlockNumber: vLog.BlockNumber,
+			BlockNumber:  vLog.BlockNumber,
 			Status:      store.TxStatusSuccess, // 链上事件已确认
 			Network:     s.network,
 			TxType:      "erc20_transfer",
+			ContractAddr: vLog.Address.Hex(), // 记录事件所属合约地址
 			CreatedAt:   time.Now(),
 		}); err != nil {
 			log.Printf("⚠️  [EventService] 持久化事件失败: %v", err)

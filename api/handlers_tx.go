@@ -126,3 +126,81 @@ func (h *TxHandlers) GetTxByHash(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(entry)
 }
+
+func (h *TxHandlers) GetGasFeeSuggestion(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	log.Println("📥 [API] GET /api/tx/gas-fee")
+
+	txService := h.manager.GetTxService()
+	if txService == nil {
+		http.Error(w, "tx service not available", http.StatusInternalServerError)
+		return
+	}
+
+	suggestion, err := txService.GetGasFeeSuggestion(r.Context())
+	if err != nil {
+		log.Printf("❌ [API] 获取 Gas 费用建议失败: %v", err)
+		http.Error(w, "failed to get gas fee suggestion", http.StatusInternalServerError)
+		return
+	}
+
+	log.Println("✅ [API] Gas 费用建议获取成功")
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(suggestion)
+}
+
+func (h *TxHandlers) EstimateGas(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		From  string `json:"from"`
+		To    string `json:"to"`
+		Value string `json:"value"`
+	}
+
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("📥 [API] POST /api/tx/estimate-gas - To: %s, Value: %s", req.To, req.Value)
+
+	txService := h.manager.GetTxService()
+	if txService == nil {
+		http.Error(w, "tx service not available", http.StatusInternalServerError)
+		return
+	}
+
+	// 如果没有提供 from 地址，使用当前签名者地址
+	from := req.From
+	if from == "" {
+		signer := h.manager.GetTxSendService()
+		if signer != nil {
+			// 需要从 signer 获取地址，这里暂时使用空地址
+			from = "0x0000000000000000000000000000000000000000"
+		}
+	}
+
+	gas, err := txService.EstimateGas(r.Context(), from, req.To, req.Value)
+	if err != nil {
+		log.Printf("❌ [API] Gas 估算失败: %v", err)
+		http.Error(w, "failed to estimate gas", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("✅ [API] Gas 估算成功: %d", gas)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]uint64{"gas": gas})
+}

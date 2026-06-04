@@ -8,6 +8,10 @@ import type {
   TokenInfo,
   TokenBalanceResponse,
   EventsResponse,
+  TxHistoryEntry,
+  SendTxRequest,
+  SendTxResponse,
+  GasFeeSuggestion,
 } from '../types'
 
 export interface ConfigResponse {
@@ -50,14 +54,36 @@ export const getTokenBalance = (holder: string) =>
 export const deployContract = (data: DeployRequest) =>
   api.post<DeployResponse>('/token/deploy', data)
 
+/** 代币转账 */
+export const tokenTransfer = (data: { to: string; amount: string }) =>
+  api.post<{ txHash: string; status: string }>('/token/transfer', data)
+
 // ============ 事件相关 API ============
 
 /** 获取事件列表 */
-export const getEvents = (params?: { address?: string; limit?: number; offset?: number }) =>
+export const getEvents = (params?: { address?: string; limit?: number; offset?: number; contractOnly?: boolean }) =>
   api.get<EventsResponse>('/events', { params })
 
 /** 获取配置信息 */
 export const getConfig = () =>
   api.get<ConfigResponse>('/config')
+
+// ============ 交易相关 API ============
+
+/** 获取交易历史 */
+export const getTxHistory = (params?: { limit?: number; offset?: number }) =>
+  api.get<TxHistoryEntry[]>('/tx/history', { params })
+
+/** 发送 ETH 交易 */
+export const sendTransaction = (data: SendTxRequest) =>
+  api.post<SendTxResponse>('/tx/send', data)
+
+/** 获取 Gas 费用建议 */
+export const getGasFeeSuggestion = () =>
+  api.get<GasFeeSuggestion>('/tx/gas-fee')
+
+/** 估算 Gas */
+export const estimateGas = (to: string, value: string) =>
+  api.post<{ gas: number }>('/tx/estimate-gas', { to, value })
 
 export default api

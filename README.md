@@ -10,13 +10,13 @@
 - **区块查询**：支持通过区块号或哈希查询区块详情
 - **交易查询**：查询交易详情、输入数据和回执信息
 - **ERC-20 事件监听**：实时监听 Transfer 事件，持久化到 SQLite 数据库，支持断线自动重连
-- **交易发送**：支持 ETH 转账，自动处理 Gas 估算和交易签名
+- **交易发送**：支持 ETH 转账和 ERC-20 代币转账，自动处理 Gas 估算和交易签名
 - **合约交互**：支持调用合约视图方法和发送合约交易
 - **代币管理**：查询代币信息、余额，支持代币转账、铸造及部署
 - **合约部署**：支持通过 API 部署 MyERC20 合约，部署后自动保存地址
 - **合约地址管理**：支持多合约地址管理，可通过 API 切换当前合约，支持 SQLite 持久化
 - **历史追溯**：SQLite 统一存储，通过 `tx_type` 区分 ETH 转账和 ERC20 事件，支持分页和地址过滤查询
-- **前端管理面板**：React + TypeScript + Ant Design 构建的管理界面，支持查看合约列表、部署合约、切换监听合约等功能
+- **前端管理面板**：React + TypeScript + Ant Design 构建的管理界面，支持查看合约列表、部署合约、切换监听合约、发送交易等功能
 
 ### 架构特性
 - **分层架构**：Client → Service → API / Store
@@ -75,6 +75,9 @@
 ETH 转账:  POST /api/tx/send → TxSendService → SQLite (tx_type=eth_transfer, status=pending)
                                               └→ 异步更新 status + block_number
 
+ERC-20 代币转账: POST /api/token/transfer → ERC20Service → 合约调用 → SQLite (tx_type=erc20_transfer)
+                                                                        └→ EventService 监听并记录 Transfer 事件
+
 ERC20 事件: WebSocket 监听 → EventService → SQLite (tx_type=erc20_transfer, status=success)
                                                          └→ 断线自动重连（指数退避）
 
@@ -89,7 +92,7 @@ ERC20 事件: WebSocket 监听 → EventService → SQLite (tx_type=erc20_transf
 
 API 查询:
   GET /api/tx/history → List(limit, offset)       → 全部类型
-  GET /api/events     → ListByType(erc20_transfer) → 支持 address/limit/offset
+  GET /api/events     → ListByAddress()            → 支持按地址过滤（from_addr/to_addr/contract_addr），支持 contractOnly 参数
 ```
 
 ### 包结构
@@ -167,7 +170,9 @@ go-ether/
 
 | 方法 | 路径 | 描述 | 参数 |
 |------|------|------|------|
-| GET | `/api/events` | 查询 ERC20 Transfer 事件 | `address`: 按地址过滤（可选），`limit`: 每页数量（默认 20），`offset`: 偏移量（默认 0） |
+| GET | `/api/events` | 查询交易/事件记录 | `address`: 按地址过滤（可选），`contractOnly`: 是否仅查询合约事件（可选，默认 false），`limit`: 每页数量（默认 20），`offset`: 偏移量（默认 0） |
+
+**说明**: 当 `contractOnly=true` 时，仅查询 `contract_addr` 匹配的记录（ERC-20 事件）；当 `contractOnly=false` 或不指定时，查询所有 `from_addr`、`to_addr` 或 `contract_addr` 匹配的记录。 |
 
 ### 合约相关
 
@@ -256,8 +261,15 @@ ETH_WS_URL=wss://sepolia.infura.io/ws/v3/YOUR_INFURA_KEY
 # 合约地址优先从 contracts.db 读取
 ERC20_CONTRACT=0xYourContractAddress
 
-# 发送者私钥（用于签名交易，不要提交到版本控制）
-SENDER_PRIVATE_KEY=your_private_key_here
+# 钱包配置方式（推荐使用 Keystore）
+# 方式一：使用 Keystore 文件（推荐，更安全）
+# KEYSTORE_PATH: keystore 文件的完整路径，例如 /home/user/.ethereum/keystore/UTC--xxx
+# KEYSTORE_PASSWORD: 解密 keystore 的密码
+KEYSTORE_PATH=/path/to/your/keystore/UTC--2024-01-01--xxxxxx
+KEYSTORE_PASSWORD=your_keystore_password
+
+# 方式二：使用环境变量私钥（兼容旧版本，不推荐用于生产环境）
+# SENDER_PRIVATE_KEY=your_private_key_here
 
 # CORS 允许的前端域名白名单（逗号分隔，不设置时默认允许常用本地开发地址）
 # CORS_ALLOWED_ORIGINS=https://your-domain.com
@@ -266,6 +278,8 @@ SENDER_PRIVATE_KEY=your_private_key_here
 # MAX_TOKEN_AMOUNT=1000000000000000000000000000000
 ```
 
+**注意**: Keystore 方式优先于环境变量方式。如果同时配置了 Keystore 和环境变量私钥，系统会优先使用 Keystore 方式。
+
 ### 启动服务
 
 ```bash
@@ -273,6 +287,9 @@ SENDER_PRIVATE_KEY=your_private_key_here
 ./mini-block-explorer
 
 # 或直接设置环境变量
+NETWORK=sepolia ERC20_CONTRACT=0x... KEYSTORE_PATH=/path/to/keystore KEYSTORE_PASSWORD=password ./mini-block-explorer
+
+# 旧版本：使用环境变量私钥
 NETWORK=sepolia ERC20_CONTRACT=0x... SENDER_PRIVATE_KEY=... ./mini-block-explorer
 ```
 
@@ -544,6 +561,7 @@ http://localhost:8080/manage/index
 3. **切换监听**：点击"切换监听"按钮，快速切换当前监听的合约
 4. **状态监控**：实时显示当前监听状态、合约数量统计
 5. **事件查看**：在合约详情页查看该合约的 Transfer 事件历史
+6. **发送交易**：支持 ETH 转账和 ERC-20 代币转账，可选择交易类型，自动填充合约地址，显示交易费用汇总
 
 ## 许可证
 

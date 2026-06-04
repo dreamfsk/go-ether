@@ -443,7 +443,15 @@ func (h *ContractHandlers) TokenTransfer(w http.ResponseWriter, r *http.Request)
 	log.Printf("📥 [API] POST /api/token/transfer - to: %s, amount: %s", req.To, req.Amount)
 
 	if h.getERC20Service() == nil {
-		RequireSigner(w, "代币转账")
+		// 检查是否有签名器
+		signer := h.contractManager.GetSigner()
+		if signer == nil {
+			RequireSigner(w, "代币转账")
+			return
+		}
+		// 有签名器但没有合约地址，返回更准确的错误
+		log.Printf("⚠️  [API] 合约地址未配置，无法执行代币转账")
+		http.Error(w, "No active contract configured. Please deploy a contract first using POST /api/token/deploy", http.StatusBadRequest)
 		return
 	}
 
@@ -494,7 +502,15 @@ func (h *ContractHandlers) TokenMint(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📥 [API] POST /api/token/mint - to: %s, amount: %s", req.To, req.Amount)
 
 	if h.getERC20Service() == nil {
-		RequireSigner(w, "代币铸造")
+		// 检查是否有签名器
+		signer := h.contractManager.GetSigner()
+		if signer == nil {
+			RequireSigner(w, "代币铸造")
+			return
+		}
+		// 有签名器但没有合约地址，返回更准确的错误
+		log.Printf("⚠️  [API] 合约地址未配置，无法执行代币铸造")
+		http.Error(w, "No active contract configured. Please deploy a contract first using POST /api/token/deploy", http.StatusBadRequest)
 		return
 	}
 
@@ -551,7 +567,9 @@ func (h *ContractHandlers) TokenDeploy(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("📥 [API] POST /api/token/deploy - name: %s, symbol: %s, recipient: %s", req.Name, req.Symbol, req.Recipient)
 
-	if h.getERC20Service() == nil {
+	// 检查签名器
+	signer := h.contractManager.GetSigner()
+	if signer == nil {
 		RequireSigner(w, "合约部署")
 		return
 	}
@@ -566,10 +584,28 @@ func (h *ContractHandlers) TokenDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.getERC20Service().Deploy(r.Context(), req.Name, req.Symbol, initialSupply, req.Recipient)
+	// 优先使用 ERC20Service，如果不存在则直接调用 DeployERC20
+	var result *service.DeployResult
+	if h.getERC20Service() != nil {
+		result, err = h.getERC20Service().Deploy(r.Context(), req.Name, req.Symbol, initialSupply, req.Recipient)
+	} else {
+		// 直接使用 signer 部署合约
+		log.Printf("⚠️  [API] ERC20Service 未初始化，使用 signer 直接部署")
+		result, err = service.DeployERC20(
+			r.Context(),
+			h.contractManager.GetMultiClient().RPC(),
+			signer,
+			h.contractManager.GetChainID(),
+			req.Name,
+			req.Symbol,
+			initialSupply,
+			req.Recipient,
+		)
+	}
+
 	if err != nil {
 		log.Printf("❌ [API] 合约部署失败: %v", err)
-		http.Error(w, "failed to deploy", http.StatusInternalServerError)
+		http.Error(w, "failed to deploy: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 

@@ -41,4 +41,8 @@ transactions.db
 .examples/
 .res/
 *.db
-got-ether
+go-ether
+keystore/
+start*
+__debug*
+mini-*
