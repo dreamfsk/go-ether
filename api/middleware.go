@@ -9,24 +9,24 @@ import (
 	"time"
 )
 
-// responseWriter 包装 http.ResponseWriter 以捕获状态码
-type responseWriter struct {
+// ResponseWriter 包装 http.ResponseWriter 以捕获状态码
+type ResponseWriter struct {
 	http.ResponseWriter
-	statusCode int
+	StatusCode int
 }
 
-func newResponseWriter(w http.ResponseWriter) *responseWriter {
-	return &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+func NewResponseWriter(w http.ResponseWriter) *ResponseWriter {
+	return &ResponseWriter{ResponseWriter: w, StatusCode: http.StatusOK}
 }
 
-func (rw *responseWriter) WriteHeader(code int) {
-	rw.statusCode = code
+func (rw *ResponseWriter) WriteHeader(code int) {
+	rw.StatusCode = code
 	rw.ResponseWriter.WriteHeader(code)
 }
 
-// corsAllowedOrigins 允许跨域访问的前端域名白名单，逗号分隔。
+// CorsAllowedOrigins 允许跨域访问的前端域名白名单，逗号分隔。
 // 可通过环境变量 CORS_ALLOWED_ORIGINS 配置，默认可本地开发地址。
-func corsAllowedOrigins() []string {
+func CorsAllowedOrigins() []string {
 	raw := os.Getenv("CORS_ALLOWED_ORIGINS")
 	if raw == "" {
 		raw = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080,http://localhost:3000"
@@ -35,8 +35,8 @@ func corsAllowedOrigins() []string {
 }
 
 // corsMiddleware 添加 CORS 头，仅反射允许的 Origin，不使用通配符。
-func corsMiddleware(next http.Handler) http.Handler {
-	allowed := corsAllowedOrigins()
+func CorsMiddleware(next http.Handler) http.Handler {
+	allowed := CorsAllowedOrigins()
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
@@ -72,21 +72,21 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// loggingMiddleware 统一请求日志：方法、路径、耗时、状态码
-func loggingMiddleware(next http.Handler) http.Handler {
+// LoggingMiddleware 统一请求日志：方法、路径、耗时、状态码
+func LoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		rw := newResponseWriter(w)
+		rw := NewResponseWriter(w)
 
 		next.ServeHTTP(rw, r)
 
 		duration := time.Since(start)
-		log.Printf("📥 [HTTP] %s %s → %d (%v)", r.Method, r.URL.Path, rw.statusCode, duration)
+		log.Printf("📥 [HTTP] %s %s → %d (%v)", r.Method, r.URL.Path, rw.StatusCode, duration)
 	})
 }
 
-// recoveryMiddleware 捕获 panic 并记录堆栈，返回 500
-func recoveryMiddleware(next http.Handler) http.Handler {
+// RecoveryMiddleware 捕获 panic 并记录堆栈，返回 500
+func RecoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {

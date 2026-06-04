@@ -40,7 +40,7 @@ func NewServer(handlers *Handlers, txHandlers *TxHandlers, contractHandlers *Con
 	return &Server{
 		httpServer: &http.Server{
 			Addr:    addr,
-			Handler: recoveryMiddleware(loggingMiddleware(corsMiddleware(mux))),
+			Handler: RecoveryMiddleware(LoggingMiddleware(CorsMiddleware(mux))),
 			ReadTimeout:  5 * time.Second,
 			WriteTimeout: 10 * time.Second,
 		},
