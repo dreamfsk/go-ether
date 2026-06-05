@@ -40,3 +40,9 @@ transactions.db
 .trae/
 .examples/
 .res/
+*.db
+go-ether
+keystore/
+start*
+__debug*
+mini-*

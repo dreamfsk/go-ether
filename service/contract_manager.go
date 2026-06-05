@@ -155,12 +155,31 @@ func (m *ContractManager) GetEventService() *EventService {
 	return m.serviceBundle.EventService()
 }
 
+// GetSigner 返回签名器
+func (m *ContractManager) GetSigner() wallet.Signer {
+	return m.signer
+}
+
+// GetChainID 返回链 ID
+func (m *ContractManager) GetChainID() *big.Int {
+	return m.chainID
+}
+
+// GetMultiClient 返回多协议客户端
+func (m *ContractManager) GetMultiClient() *client.MultiClient {
+	return m.multiClient
+}
+
 func (m *ContractManager) GetERC20Service() *ERC20Service {
 	return m.serviceBundle.ERC20Service()
 }
 
 func (m *ContractManager) GetTxSendService() *TxSendService {
 	return m.serviceBundle.TxSendService()
+}
+
+func (m *ContractManager) GetTxService() *TxService {
+	return m.serviceBundle.TxService()
 }
 
 func (m *ContractManager) GetTxHistory() *store.TxHistoryStore {

@@ -72,14 +72,40 @@ func main() {
 
 	var signer wallet.Signer
 	log.Println("🔐 初始化钱包...")
-	envSigner, err := wallet.NewEnvSigner()
-	if err != nil {
-		log.Printf("⚠️  钱包初始化失败: %v", err)
-		log.Println("   交易发送功能将不可用")
-		signer = nil
-	} else {
-		signer = envSigner
-		log.Printf("✅ 钱包初始化成功")
+	
+	walletCfg := config.LoadWalletConfig()
+	log.Printf("   - Keystore 路径配置: %s", walletCfg.KeystorePath)
+	log.Printf("   - 环境变量私钥配置: %s", func() string {
+		if os.Getenv("SENDER_PRIVATE_KEY") != "" {
+			return "已配置"
+		}
+		return "未配置"
+	}())
+	
+	// 优先尝试 keystore 方式
+	if walletCfg.KeystorePath != "" && walletCfg.KeystorePassword != "" {
+		keystoreSigner, err := wallet.NewKeystoreSignerFromPath(walletCfg.KeystorePath, walletCfg.KeystorePassword)
+		if err != nil {
+			log.Printf("⚠️  Keystore 钱包初始化失败: %v", err)
+			log.Println("   尝试使用环境变量方式...")
+		} else {
+			signer = keystoreSigner
+			log.Printf("✅ Keystore 钱包初始化成功，地址: %s", keystoreSigner.Address().Hex())
+			log.Printf("   Keystore 路径: %s", walletCfg.KeystorePath)
+		}
+	}
+	
+	// 如果 keystore 方式失败或未配置，尝试环境变量方式
+	if signer == nil {
+		envSigner, err := wallet.NewEnvSigner()
+		if err != nil {
+			log.Printf("⚠️  环境变量钱包初始化失败: %v", err)
+			log.Printf("   交易发送功能将不可用")
+			signer = nil
+		} else {
+			signer = envSigner
+			log.Printf("✅ 环境变量钱包初始化成功，地址: %s", envSigner.Address().Hex())
+		}
 	}
 
 	log.Println("🔧 初始化服务组件...")
@@ -174,30 +200,39 @@ func createStaticHandler() http.Handler {
 	absDistPath = filepath.Clean(absDistPath) + string(filepath.Separator)
 
 	fs := http.FileServer(http.Dir(distPath))
+	// absDistPath 不含结尾分隔符，用于前缀匹配
+	absDistDir := strings.TrimSuffix(absDistPath, string(filepath.Separator))
 
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 去掉 /manage 前缀
-		r.URL.Path = strings.TrimPrefix(r.URL.Path, "/manage")
-		if r.URL.Path == "" || r.URL.Path == "/" {
-			r.URL.Path = "/index.html"
-		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// 去掉 /manage 前缀
+			r.URL.Path = strings.TrimPrefix(r.URL.Path, "/manage")
+			if r.URL.Path == "" || r.URL.Path == "/" {
+				r.URL.Path = "/"
+			}
 
-		// 路径穿越防护：清理后验证仍在 dist 目录内
-		cleanedPath := filepath.Clean(r.URL.Path)
-		fullPath := filepath.Join(absDistPath, cleanedPath)
-		if !strings.HasPrefix(fullPath, absDistPath) {
-			log.Printf("⚠️  [Static] 拒绝路径穿越访问: %s", r.URL.Path)
-			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
-			return
-		}
+			// 路径穿越防护：清理后验证仍在 dist 目录内
+			cleanedPath := filepath.Clean(r.URL.Path)
+			fullPath := filepath.Join(absDistPath, cleanedPath)
+			if !strings.HasPrefix(fullPath, absDistDir) {
+				log.Printf("⚠️  [Static] 拒绝路径穿越访问: %s", r.URL.Path)
+				http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+				return
+			}
 
-		// SPA fallback: 文件不存在时返回 index.html
-		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-			r.URL.Path = "/index.html"
-		} else {
-			r.URL.Path = "/" + cleanedPath
-		}
+			// SPA fallback: 文件不存在时返回 index.html
+			info, statErr := os.Stat(fullPath)
+			if statErr != nil || info.IsDir() {
+				// 目录或无文件 → 返回 index.html（直接读取避免 serveFile 的 index.html 重定向）
+				if statErr == nil && info.IsDir() {
+					// 是目录，让 FileServer 自动处理 index.html
+					fs.ServeHTTP(w, r)
+					return
+				}
+				// SPA fallback: 直接读取 index.html 文件内容返回
+				http.ServeFile(w, r, filepath.Join(absDistPath, "index.html"))
+				return
+			}
 
-		fs.ServeHTTP(w, r)
-	})
+			fs.ServeHTTP(w, r)
+		})
 }

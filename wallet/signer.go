@@ -28,7 +28,7 @@ type EnvSigner struct {
 func NewEnvSigner() (*EnvSigner, error) {
 	privateKeyHex := os.Getenv("SENDER_PRIVATE_KEY")
 	if privateKeyHex == "" {
-		return nil, fmt.Errorf("SENDER_PRIVATE_KEY environment variable is required")
+		return nil, fmt.Errorf("SENDER_PRIVATE_KEY environment variable is empty")
 	}
 
 	// 移除可能的 0x 前缀
@@ -36,9 +36,14 @@ func NewEnvSigner() (*EnvSigner, error) {
 		privateKeyHex = privateKeyHex[2:]
 	}
 
+	// 验证私钥长度
+	if len(privateKeyHex) != 64 {
+		return nil, fmt.Errorf("invalid private key length: expected 64 characters, got %d", len(privateKeyHex))
+	}
+
 	privateKey, err := crypto.HexToECDSA(privateKeyHex)
 	if err != nil {
-		return nil, fmt.Errorf("invalid private key: %w", err)
+		return nil, fmt.Errorf("invalid private key format: %w", err)
 	}
 
 	publicKey := privateKey.Public()
@@ -56,7 +61,21 @@ func NewEnvSigner() (*EnvSigner, error) {
 }
 
 func (s *EnvSigner) SignTx(ctx context.Context, tx *types.Transaction, chainID *big.Int) (*types.Transaction, error) {
-	signer := types.LatestSignerForChainID(chainID)
+	var signer types.Signer
+	
+	// 根据交易类型选择合适的签名器
+	switch tx.Type() {
+	case types.LegacyTxType:
+		// Legacy 交易使用 Homestead 签名器
+		signer = types.NewEIP155Signer(chainID)
+	case types.DynamicFeeTxType:
+		// EIP-1559 交易使用最新签名器
+		signer = types.LatestSignerForChainID(chainID)
+	default:
+		// 默认使用最新签名器
+		signer = types.LatestSignerForChainID(chainID)
+	}
+	
 	signedTx, err := types.SignTx(tx, signer, s.privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign transaction: %w", err)

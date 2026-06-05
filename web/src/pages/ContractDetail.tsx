@@ -43,17 +43,17 @@ const ContractDetail = () => {
   }, [address])
 
   const fetchEvents = useCallback(async () => {
-    if (!address) return
-    setEventsLoading(true)
-    try {
-      const res = await getEvents({ address, limit: 50, offset: 0 })
-      setEvents(res.data.events || [])
-    } catch {
-      // events might not be available
-    } finally {
-      setEventsLoading(false)
-    }
-  }, [address])
+		if (!address) return
+		setEventsLoading(true)
+		try {
+			const res = await getEvents({ address, limit: 50, offset: 0 })
+			setEvents(res.data.events || [])
+		} catch {
+			// events might not be available
+		} finally {
+			setEventsLoading(false)
+		}
+	}, [address])
 
   useEffect(() => {
     fetchContract()
@@ -94,6 +94,17 @@ const ContractDetail = () => {
       ),
     },
     {
+      title: '类型',
+      dataIndex: 'txType',
+      key: 'txType',
+      width: 100,
+      render: (txType: string) => (
+        <Tag color={txType === 'eth_transfer' ? 'blue' : 'green'}>
+          {txType === 'eth_transfer' ? 'ETH 转账' : 'ERC-20 转账'}
+        </Tag>
+      ),
+    },
+    {
       title: '发送方',
       dataIndex: 'fromAddr',
       key: 'fromAddr',
@@ -122,6 +133,17 @@ const ContractDetail = () => {
       dataIndex: 'value',
       key: 'value',
       width: 160,
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 80,
+      render: (status: number) => {
+        if (status === 0) return <Tag color="processing">待确认</Tag>
+        if (status === 1) return <Tag color="success">成功</Tag>
+        return <Tag color="error">失败</Tag>
+      },
     },
     {
       title: '区块号',

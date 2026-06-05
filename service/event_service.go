@@ -73,6 +73,9 @@ func NewEventService(c *client.EthClient, txHistory *store.TxHistoryStore, netwo
 func (s *EventService) StartListening(ctx context.Context) {
 	log.Println("👂 [EventService] 开始订阅 ERC20 Transfer 事件...")
 
+	// 启动时回填现有记录的 contract_addr
+	go s.migrateContractAddr(ctx)
+
 	var attempt int
 
 RECONNECT:
@@ -84,8 +87,10 @@ RECONNECT:
 		default:
 		}
 
-		attempt++
-		log.Printf("🔄 [EventService] 连接尝试 #%d", attempt)
+		if attempt > 0 {
+			// 连接中断后才打印重连信息，首次连接不打印
+			log.Printf("🔄 [EventService] 连接尝试 #%d", attempt)
+		}
 
 		query := ethereum.FilterQuery{
 			Addresses: []common.Address{s.contract},
@@ -95,20 +100,23 @@ RECONNECT:
 		sub, err := s.client.SubscribeFilterLogs(ctx, query, logsCh)
 		if err != nil {
 			log.Printf("❌ [EventService] 事件订阅失败: %v", err)
+			attempt++
 			s.sleepWithBackoff(ctx, attempt)
 			continue RECONNECT
 		}
 
+		// 连接成功后重置计数器
+		attempt = 0
 		log.Printf("✅ [EventService] 事件订阅成功，监听合约: %s", s.contract.Hex())
 
 		for {
 			select {
 			case vLog := <-logsCh:
-				log.Printf("📨 [EventService] 收到日志，区块 #%d，交易: %s", vLog.BlockNumber, vLog.TxHash.Hex())
 				s.processLog(vLog)
 			case err := <-sub.Err():
-				log.Printf("❌ [EventService] 订阅错误: %v", err)
+				log.Printf("❌ [EventService] 订阅连接断开: %v", err)
 				sub.Unsubscribe()
+				attempt++
 				s.sleepWithBackoff(ctx, attempt)
 				continue RECONNECT
 			case <-ctx.Done():
@@ -132,6 +140,45 @@ func (s *EventService) sleepWithBackoff(ctx context.Context, attempt int) {
 	case <-t.C:
 	case <-ctx.Done():
 	}
+}
+
+// migrateContractAddr 回填旧有 ERC-20 记录的 contract_addr（从链上交易收据获取）
+func (s *EventService) migrateContractAddr(ctx context.Context) {
+	log.Println("🔄 [EventService] 开始回填 contract_addr...")
+
+	entries, err := s.txHistory.ListByContractAddr("", 50, 0)
+	if err != nil {
+		log.Printf("❌ [EventService] 回填 contract_addr 失败: %v", err)
+		return
+	}
+
+	if len(entries) == 0 {
+		log.Println("✅ [EventService] contract_addr 回填完成（无需回填）")
+		return
+	}
+
+	updated := 0
+	for _, entry := range entries {
+		receipt, err := s.client.TransactionReceipt(ctx, common.HexToHash(entry.TxHash))
+		if err != nil {
+			log.Printf("⚠️  [EventService] 获取交易收据失败 %s: %v", entry.TxHash, err)
+			continue
+		}
+
+		// 从交易收据的 logs 中找到 Transfer 事件，它的 Address 就是合约地址
+		for _, receiptLog := range receipt.Logs {
+			if len(receiptLog.Topics) > 0 && receiptLog.Topics[0] == s.abi.Events["Transfer"].ID {
+				if err := s.txHistory.UpdateContractAddr(entry.TxHash, receiptLog.Address.Hex()); err != nil {
+					log.Printf("⚠️  [EventService] 更新 contract_addr 失败 %s: %v", entry.TxHash, err)
+				} else {
+					updated++
+				}
+				break
+			}
+		}
+	}
+
+	log.Printf("✅ [EventService] contract_addr 回填完成: 更新了 %d/%d 条记录", updated, len(entries))
 }
 
 func (s *EventService) processLog(vLog types.Log) {
@@ -180,10 +227,11 @@ func (s *EventService) processLog(vLog types.Log) {
 			FromAddr:    event.From.Hex(),
 			ToAddr:      event.To.Hex(),
 			Value:       event.Value.String(),
-			BlockNumber: vLog.BlockNumber,
+			BlockNumber:  vLog.BlockNumber,
 			Status:      store.TxStatusSuccess, // 链上事件已确认
 			Network:     s.network,
 			TxType:      "erc20_transfer",
+			ContractAddr: vLog.Address.Hex(), // 记录事件所属合约地址
 			CreatedAt:   time.Now(),
 		}); err != nil {
 			log.Printf("⚠️  [EventService] 持久化事件失败: %v", err)

@@ -110,11 +110,6 @@ func (s *ERC20Service) Transfer(ctx context.Context, to string, amount *big.Int)
 	}
 	auth.Nonce = nonce
 	auth.Value = big.NewInt(0)
-	gasPrice, err := s.getGasPrice(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed to get gas price: %w", err)
-	}
-	auth.GasPrice = gasPrice
 
 	toAddr := common.HexToAddress(to)
 	fromAddr := s.signer.Address()
@@ -148,10 +143,6 @@ func (s *ERC20Service) Mint(ctx context.Context, to string, amount *big.Int) (st
 		return "", fmt.Errorf("failed to get nonce: %w", err)
 	}
 	auth.Value = big.NewInt(0)
-	auth.GasPrice, err = s.getGasPrice(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed to get gas price: %w", err)
-	}
 
 	toAddr := common.HexToAddress(to)
 	fromAddr := s.signer.Address()
@@ -195,13 +186,11 @@ func DeployERC20(ctx context.Context, c *client.EthClient, signer wallet.Signer,
 	}
 	auth.Nonce = big.NewInt(int64(nonce))
 
-	gasPrice, err := c.SuggestGasPrice(ctx)
-	if err != nil {
-		gasPrice = big.NewInt(1_000_000_000)
+	// 如果 recipient 为空，使用部署者地址作为初始代币接收者
+	recipientAddr := signer.Address()
+	if recipient != "" {
+		recipientAddr = common.HexToAddress(recipient)
 	}
-	auth.GasPrice = gasPrice
-
-	recipientAddr := common.HexToAddress(recipient)
 
 	addr, tx, _, err := contracts.DeployMyERC20(auth, c, name, symbol, initialSupply, recipientAddr)
 	if err != nil {
@@ -330,10 +319,6 @@ func (s *ERC20Service) Approve(ctx context.Context, spender string, amount *big.
 		return "", fmt.Errorf("failed to get nonce: %w", err)
 	}
 	auth.Value = big.NewInt(0)
-	auth.GasPrice, err = s.getGasPrice(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed to get gas price: %w", err)
-	}
 
 	spenderAddr := common.HexToAddress(spender)
 	fromAddr := s.signer.Address()
@@ -367,10 +352,6 @@ func (s *ERC20Service) TransferFrom(ctx context.Context, from, to string, amount
 		return "", fmt.Errorf("failed to get nonce: %w", err)
 	}
 	auth.Value = big.NewInt(0)
-	auth.GasPrice, err = s.getGasPrice(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed to get gas price: %w", err)
-	}
 
 	fromAddr := common.HexToAddress(from)
 	toAddr := common.HexToAddress(to)

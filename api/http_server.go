@@ -22,6 +22,8 @@ func NewServer(handlers *Handlers, txHandlers *TxHandlers, contractHandlers *Con
 	mux.HandleFunc("/api/tx/send", txHandlers.SendTransaction)
 	mux.HandleFunc("/api/tx/history", txHandlers.GetTxHistory)
 	mux.HandleFunc("/api/tx/detail", txHandlers.GetTxByHash)
+	mux.HandleFunc("/api/tx/gas-fee", txHandlers.GetGasFeeSuggestion)
+	mux.HandleFunc("/api/tx/estimate-gas", txHandlers.EstimateGas)
 	mux.HandleFunc("/api/contract/list", contractHandlers.ContractList)
 	mux.HandleFunc("/api/contract/switch", contractHandlers.ContractSwitch)
 	mux.HandleFunc("/api/contract/current", contractHandlers.ContractCurrent)
@@ -32,6 +34,7 @@ func NewServer(handlers *Handlers, txHandlers *TxHandlers, contractHandlers *Con
 	mux.HandleFunc("/api/token/transfer", contractHandlers.TokenTransfer)
 	mux.HandleFunc("/api/token/mint", contractHandlers.TokenMint)
 	mux.HandleFunc("/api/token/deploy", contractHandlers.TokenDeploy)
+	mux.HandleFunc("/api/config", contractHandlers.Config)
 
 	if staticHandler != nil {
 		mux.Handle("/manage/", staticHandler)
@@ -59,6 +62,8 @@ func (s *Server) Start() error {
 	log.Println("   - POST /api/tx/send")
 	log.Println("   - GET /api/tx/history")
 	log.Println("   - GET /api/tx/detail")
+	log.Println("   - GET /api/tx/gas-fee")
+	log.Println("   - POST /api/tx/estimate-gas")
 	log.Println("   - GET /api/contract/list")
 	log.Println("   - POST /api/contract/switch")
 	log.Println("   - GET /api/contract/current")
@@ -69,6 +74,7 @@ func (s *Server) Start() error {
 	log.Println("   - POST /api/token/transfer")
 	log.Println("   - POST /api/token/mint")
 	log.Println("   - POST /api/token/deploy")
+	log.Println("   - GET /api/config")
 	return s.httpServer.ListenAndServe()
 }
 

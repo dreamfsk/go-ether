@@ -26,6 +26,7 @@ type ContractServiceBundle struct {
 	eventService  *EventService
 	erc20Service  *ERC20Service
 	txSendService *TxSendService
+	txService     *TxService
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -74,6 +75,9 @@ func (b *ContractServiceBundle) Init(contractAddr string) error {
 
 		b.txSendService = NewTxSendService(b.multiClient.RPC(), b.signer, b.network, b.chainID, b.txHistory)
 	}
+
+	// TxService 不需要 signer，始终创建
+	b.txService = NewTxService(b.multiClient.RPC())
 
 	log.Printf("[ServiceBundle] 服务初始化完成，合约: %s", contractAddr)
 	return nil
@@ -125,6 +129,13 @@ func (b *ContractServiceBundle) TxSendService() *TxSendService {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.txSendService
+}
+
+// TxService 返回交易查询服务
+func (b *ContractServiceBundle) TxService() *TxService {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.txService
 }
 
 // CreateERC20ServiceFor 为指定地址创建临时 ERC20Service
